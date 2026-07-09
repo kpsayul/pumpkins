@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cpp-review-bot"
+version = "0.1.0"
+description = "Experimental pipeline: catch risky C++ patterns from git diffs without building the target project (clang-tidy + LLM post-processing)."
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.40",
+    "unidiff>=0.7",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+cpp-review = "cpp_review_bot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
