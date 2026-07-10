@@ -21,9 +21,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from cpp_review_bot.analysis.checks import checks_arg
-from cpp_review_bot.config import COMPILE_DB_CANDIDATES, LINE_FILTER_MARGIN, SHALLOW_MODE_STD
-from cpp_review_bot.models import DiffScope, FileDiff, RawDiagnostic
+from pumpkins.analysis.checks import checks_arg
+from pumpkins.config import COMPILE_DB_CANDIDATES, LINE_FILTER_MARGIN, SHALLOW_MODE_STD
+from pumpkins.models import DiffScope, FileDiff, RawDiagnostic
 
 log = logging.getLogger(__name__)
 

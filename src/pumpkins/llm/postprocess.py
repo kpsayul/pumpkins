@@ -20,8 +20,8 @@ import logging
 import anthropic
 from pydantic import BaseModel, Field
 
-from cpp_review_bot.config import DEFAULT_MODEL
-from cpp_review_bot.models import DiffScope, Finding, RawDiagnostic, Severity
+from pumpkins.config import DEFAULT_MODEL
+from pumpkins.models import DiffScope, Finding, RawDiagnostic, Severity
 
 log = logging.getLogger(__name__)
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 
-from cpp_review_bot.models import ReviewResult, Severity
+from pumpkins.models import ReviewResult, Severity
 
 _SEVERITY_EMOJI = {
     Severity.critical: "🟥",

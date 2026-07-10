@@ -1,32 +1,46 @@
 # 확장 가이드
 
-## 새 버그 클래스(체크 프로파일) 추가
+## 새 규칙 프로파일 추가 (버그 클래스 또는 컨벤션)
 
-[analysis/checks.py](../src/cpp_review_bot/analysis/checks.py)의 `CHECK_PROFILES`에 키 하나 추가하면 끝입니다.
-CLI `--profile` 선택지는 dict 키에서 자동 생성됩니다.
+프로파일 하나 = "이 종류의 지적을 하겠다"는 단위입니다. 기능적 버그 클래스뿐 아니라
+**프로젝트 컨벤션**(이 아이템의 핵심 방향)도 같은 방식으로 프로파일로 얹습니다.
+[analysis/checks.py](../src/pumpkins/analysis/checks.py)의 `CHECK_PROFILES`에 키 하나 추가하면
+CLI `--profile` 선택지가 자동 생성됩니다.
 
 ```python
 CHECK_PROFILES: dict[str, list[str]] = {
     "concurrency": [...],
-    # 예: 메모리 안전성 프로파일
+    # 예: 메모리 안전성 프로파일 (clang-tidy 기반)
     "memory": [
         "bugprone-use-after-move",
         "bugprone-dangling-handle",
         "clang-analyzer-cplusplus.NewDelete*",
         "clang-analyzer-cplusplus.Move",
     ],
+    # 예: 컨벤션 프로파일 — clang-tidy readability-identifier-naming으로
+    #     일부 규칙은 기계적 확인이 가능하지만, "기존 코드의 관행 추론"은
+    #     결국 LLM 프롬프트 쪽이 담당한다 (아래 주의 참고).
+    "convention": [
+        "readability-identifier-naming",
+    ],
 }
 ```
 
 원칙:
 
-- **좁고 정밀하게.** clang-tidy 목록은 false positive가 적은 체크 위주로. 넓은 탐지는 LLM 쪽이 담당.
+- **좁고 정밀하게.** clang-tidy 목록은 false positive가 적은 체크 위주로. 넓은 판단(특히 명문화 안 된 관행)은 LLM 쪽이 담당.
 - `clang-analyzer-*` 체크는 컴파일 플래그 의존도가 높아 **얕은 모드에서 특히 부정확** — 넣는다면 compile-DB 모드 검증부터.
 - 체크 이름은 clang-tidy 버전에 따라 다름: `clang-tidy --list-checks -checks='*' | grep <keyword>`로 확인.
 
-프로파일에 맞춰 **LLM 프롬프트도 갱신**해야 합니다 — [llm/postprocess.py](../src/cpp_review_bot/llm/postprocess.py)의
+> **컨벤션 프로파일의 핵심은 clang-tidy가 아니라 LLM입니다.** `readability-identifier-naming`은
+> 규칙을 사람이 명시해줘야 동작하지만, 이 아이템이 노리는 건 *"리포 기존 코드에서 관행을 읽어내
+> 어긋난 곳을 짚는"* 것 — 그건 아래 프롬프트 확장으로 구현합니다.
+
+프로파일에 맞춰 **LLM 프롬프트도 갱신**해야 합니다 — [llm/postprocess.py](../src/pumpkins/llm/postprocess.py)의
 `_SYSTEM_PROMPT` task 3 목록이 concurrency 전용으로 하드코딩되어 있으므로, 프로파일이 늘어나면
-프로파일별 프롬프트 조각(dict)으로 분리하는 리팩토링을 먼저 하세요.
+프로파일별 프롬프트 조각(dict)으로 분리하는 리팩토링을 먼저 하세요. (컨벤션 프로파일이라면
+"diff 주변의 기존 코드에서 명명·구조 관행을 먼저 추론한 뒤, 변경분이 그걸 어겼는지 판정하라"는
+지시가 이 자리에 들어갑니다.)
 
 ## 새 diff 소스 추가 (예: GitHub PR)
 

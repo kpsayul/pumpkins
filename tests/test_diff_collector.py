@@ -1,6 +1,6 @@
 """Smoke tests for the diff parsing stage (pure, no git needed)."""
 
-from cpp_review_bot.diff import parse_diff_text
+from pumpkins.diff import parse_diff_text
 
 SAMPLE_DIFF = """\
 diff --git a/src/worker.cpp b/src/worker.cpp

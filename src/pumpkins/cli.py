@@ -1,6 +1,6 @@
 """CLI entrypoint — wires the four pipeline stages together.
 
-    cpp-review --repo /path/to/project --base main --out report.md
+    pumpkins --repo /path/to/project --base main --out report.md
 """
 
 from __future__ import annotations
@@ -11,18 +11,18 @@ import os
 import sys
 from pathlib import Path
 
-from cpp_review_bot.analysis import CHECK_PROFILES, ClangTidyRunner
-from cpp_review_bot.config import DEFAULT_MODEL, setup_logging
-from cpp_review_bot.diff import collect_diff
-from cpp_review_bot.models import Finding, ReviewResult
-from cpp_review_bot.report import render_markdown
+from pumpkins.analysis import CHECK_PROFILES, ClangTidyRunner
+from pumpkins.config import DEFAULT_MODEL, setup_logging
+from pumpkins.diff import collect_diff
+from pumpkins.models import Finding, ReviewResult
+from pumpkins.report import render_markdown
 
 log = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="cpp-review",
+        prog="pumpkins",
         description="Diff-scoped C++ review: clang-tidy + LLM triage, no build required.",
     )
     p.add_argument("--repo", type=Path, default=Path("."), help="target git repo (default: cwd)")
@@ -61,7 +61,7 @@ def run_pipeline(args: argparse.Namespace) -> ReviewResult:
 
     if use_llm:
         # Imported lazily so --no-llm works without the anthropic package configured.
-        from cpp_review_bot.llm import LlmPostProcessor
+        from pumpkins.llm import LlmPostProcessor
 
         processor = LlmPostProcessor(model=args.model)
         result.findings, result.dropped_as_noise = processor.process(

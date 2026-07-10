@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cpp-review-bot"
+name = "pumpkins"
 version = "0.1.0"
 description = "Experimental pipeline: catch risky C++ patterns from git diffs without building the target project (clang-tidy + LLM post-processing)."
 requires-python = ">=3.10"
@@ -19,7 +19,7 @@ dev = [
 ]
 
 [project.scripts]
-cpp-review = "cpp_review_bot.cli:main"
+pumpkins = "pumpkins.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

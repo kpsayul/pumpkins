@@ -15,8 +15,8 @@ from pathlib import Path
 
 from unidiff import PatchSet
 
-from cpp_review_bot.config import CPP_EXTENSIONS
-from cpp_review_bot.models import DiffScope, FileDiff, LineRange
+from pumpkins.config import CPP_EXTENSIONS
+from pumpkins.models import DiffScope, FileDiff, LineRange
 
 log = logging.getLogger(__name__)
 
