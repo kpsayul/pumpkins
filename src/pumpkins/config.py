@@ -22,11 +22,35 @@ LINE_FILTER_MARGIN = 15
 # Default C++ standard used in shallow mode (no compile_commands.json).
 SHALLOW_MODE_STD = "c++17"
 
-# Default model for LLM post-processing.
-DEFAULT_MODEL = "claude-opus-4-8"
+# Per-stage default models — rationale in docs/convention-detection-design.md §4.
+# Review (diff triage) needs nuanced context reasoning and precision is the
+# product's survival metric → Opus. Convention learning (`learn`, planned) is
+# structured-stats-in / structured-rules-out classification → Sonnet suffices.
+DEFAULT_REVIEW_MODEL = "claude-opus-4-8"
+DEFAULT_LEARN_MODEL = "claude-sonnet-5"
 
 # Candidate locations for compile_commands.json, relative to the repo root.
 COMPILE_DB_CANDIDATES = [".", "build", "out", "cmake-build-debug", "cmake-build-release"]
+
+# --- Convention learning (docs/convention-detection-design.md) ---------------
+
+# Numeric definition of "a convention": a pattern is adopted as a rule only if
+# it occurs at least MIN_RULE_OCCURRENCES times AND covers at least
+# MIN_RULE_CONSISTENCY of its category (design doc §3-(2)). Enforced in code,
+# not just in the LLM prompt.
+MIN_RULE_OCCURRENCES = 20
+MIN_RULE_CONSISTENCY = 0.85
+
+# Where `pumpkins learn` writes its human-reviewable artifact, relative to the
+# target repo root — meant to be committed alongside the code (§3-(1)).
+CONVENTIONS_FILENAME = "conventions.yml"
+
+# Directories never scanned for conventions (vendored/generated code has
+# someone else's conventions).
+LEARN_SKIP_DIRS = {
+    ".git", "build", "out", "cmake-build-debug", "cmake-build-release",
+    "third_party", "3rdparty", "external", "vendor", "deps", "node_modules", ".venv",
+}
 
 
 def setup_logging(verbose: bool = False) -> None:

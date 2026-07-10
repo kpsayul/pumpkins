@@ -1,0 +1,144 @@
+"""Convention checking — compare a diff against conventions.yml (no LLM).
+
+This is the review-side half of the convention axis
+(docs/convention-detection-design.md §6 MVP 2단계): identifiers declared on
+the *added* lines of the diff are matched against the machine-checkable rules
+(facet/value) that `pumpkins learn` adopted. Violations become question-form
+findings — the tool asks, it doesn't accuse (§3-(3)).
+
+Deliberately deterministic: same diff + same conventions.yml → same findings,
+so this stage runs even without an API key and is CI-safe. The planned LLM
+assist (design doc 방안 B — judging context the rules can't express, proposing
+new rule candidates) layers on top later; facet="other" rules are skipped here
+until then.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from pathlib import Path
+
+import yaml
+from unidiff import PatchSet
+
+from pumpkins.conventions.extractor import (
+    match_identifiers,
+    sanitize_line,
+    split_pattern,
+)
+from pumpkins.conventions.learner import ConventionRule
+from pumpkins.models import DiffScope, Finding, Severity
+
+log = logging.getLogger(__name__)
+
+# A hunk is treated as class-body context (enabling member-variable matching)
+# only if it visibly contains class scaffolding — otherwise a `int count;`
+# added line is more likely a local variable.
+_MEMBER_CONTEXT_RE = re.compile(
+    r"^\s*(?:public|private|protected)\s*:|\b(?:class|struct)\s+[A-Za-z_]"
+)
+
+_PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "k": 1}
+
+
+def load_conventions(path: Path) -> list[ConventionRule]:
+    """Load the adopted rules from a (possibly hand-edited) conventions.yml."""
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        rules = [ConventionRule.model_validate(r) for r in (doc or {}).get("rules", [])]
+    except Exception as exc:
+        raise RuntimeError(f"could not parse conventions file {path}: {exc}") from exc
+    skipped = sum(1 for r in rules if r.facet == "other")
+    if skipped:
+        log.debug("%d rule(s) with facet=other are not auto-checkable — skipped", skipped)
+    return rules
+
+
+def check_scope(scope: DiffScope, rules: list[ConventionRule]) -> list[Finding]:
+    """Match identifiers declared on added lines against the adopted rules."""
+    checkable = [r for r in rules if r.facet in ("prefix", "suffix", "casing")]
+    if not checkable:
+        return []
+
+    findings: list[Finding] = []
+    seen: set[tuple[str, str, str]] = set()  # (file, rule id, name) — report once
+
+    for file_diff in scope.files:
+        try:
+            patched = PatchSet(file_diff.patch_text)[0]
+        except Exception as exc:
+            log.debug("could not re-parse patch for %s: %s", file_diff.path, exc)
+            continue
+
+        for hunk in patched:
+            # Class scaffolding may be visible in the hunk lines, or — for
+            # additions deep inside a class body — only in git's hunk section
+            # header (`@@ ... @@ class ThreadPool {` / `private:`).
+            member_context = bool(
+                _MEMBER_CONTEXT_RE.search(hunk.section_header or "")
+            ) or any(_MEMBER_CONTEXT_RE.search(l.value) for l in hunk)
+            for line in hunk:
+                if not line.is_added or line.target_line_no is None:
+                    continue
+                sanitized = sanitize_line(line.value.rstrip("\n"))
+                for category, name in match_identifiers(sanitized, member_context):
+                    facets = dict(
+                        zip(("prefix", "suffix", "casing"), split_pattern(name))
+                    )
+                    for rule in checkable:
+                        if rule.category != category:
+                            continue
+                        if facets[rule.facet] == rule.value:
+                            continue
+                        key = (file_diff.path, rule.id, name)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        findings.append(
+                            _violation_finding(
+                                file_diff.path, line.target_line_no, name, rule
+                            )
+                        )
+
+    log.info("convention check: %d finding(s) from %d rule(s)", len(findings), len(checkable))
+    return findings
+
+
+# ------------------------------------------------------------------ internals
+
+def _violation_finding(path: str, line_no: int, name: str, rule: ConventionRule) -> Finding:
+    """Build a question-form finding (design doc §3-(3): ask, don't accuse)."""
+    explanation = (
+        f"이 리포의 {rule.category} {rule.occurrences}개 중 {rule.coverage:.0%}가 "
+        f"이 관행을 따릅니다 (근거: conventions.yml `{rule.id}`). "
+        f"여기만 다르게 한 이유가 있을까요? 의도한 예외라면 무시하셔도 됩니다."
+    )
+    return Finding(
+        file=path,
+        line=line_no,
+        check=f"convention:{rule.id}",
+        # Question-form, low-stakes by design — naming never outranks a bug.
+        severity=Severity.low,
+        title=f"`{name}` — {rule.description} 관행과 다른 것 같아요",
+        explanation=explanation,
+        suggestion=_suggest_rename(name, rule),
+        source="convention",
+    )
+
+
+def _suggest_rename(name: str, rule: ConventionRule) -> str:
+    """Mechanical rename proposal for prefix/suffix rules (casing is left to
+    the reviewer — safe automatic case conversion needs word boundaries)."""
+    prefix, suffix, _ = split_pattern(name)
+    if rule.facet == "prefix":
+        core = name[_PREFIX_STRIP[prefix]:] if prefix in _PREFIX_STRIP else name.lstrip("_")
+        renamed = core if rule.value == "(none)" else f"{rule.value}{core}"
+    elif rule.facet == "suffix":
+        core = name.rstrip("_")
+        renamed = core if rule.value == "(none)" else f"{core}{rule.value}"
+    else:
+        return ""
+    if renamed == name:
+        return ""
+    return f"관행에 맞추면 `{renamed}` 이 됩니다."

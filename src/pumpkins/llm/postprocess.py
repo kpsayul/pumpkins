@@ -20,7 +20,7 @@ import logging
 import anthropic
 from pydantic import BaseModel, Field
 
-from pumpkins.config import DEFAULT_MODEL
+from pumpkins.config import DEFAULT_REVIEW_MODEL
 from pumpkins.models import DiffScope, Finding, RawDiagnostic, Severity
 
 log = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class _LlmReview(BaseModel):
 
 
 class LlmPostProcessor:
-    def __init__(self, model: str = DEFAULT_MODEL):
+    def __init__(self, model: str = DEFAULT_REVIEW_MODEL):
         self.model = model
         self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 

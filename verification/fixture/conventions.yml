@@ -1,0 +1,32 @@
+# 검증용 정답지 — 픽스처 코드가 100% 따르는 컨벤션을 손으로 기술한 파일.
+# 역할 둘: ① checker 주입 검증의 규칙 입력, ② (키 도착 후) `pumpkins learn`이
+# 이 픽스처에서 재현해야 할 기대 출력 (learn 품질 채점의 기준).
+version: 1
+rules:
+  - id: member-prefix-m_
+    category: member_variable
+    description: "멤버 변수는 `m_` 접두사를 사용한다"
+    facet: prefix
+    value: m_
+    coverage: 1.0
+    occurrences: 6
+    confidence: high
+    examples: [m_mutex, m_queue, m_capacity]
+  - id: function-casing-lowerCamel
+    category: function
+    description: "함수 이름은 lowerCamel 표기를 사용한다"
+    facet: casing
+    value: lowerCamel
+    coverage: 1.0
+    occurrences: 4
+    confidence: high
+    examples: [submitTask, pendingCount]
+  - id: class-casing-UpperCamel
+    category: class_type
+    description: "클래스 이름은 UpperCamel 표기를 사용한다"
+    facet: casing
+    value: UpperCamel
+    coverage: 1.0
+    occurrences: 2
+    confidence: high
+    examples: [ThreadPool, TaskScheduler]

@@ -219,3 +219,5 @@ __marimo__/
 
 # Output report directory
 report/
+# Verification scorecards (generated run artifacts)
+verification/results/

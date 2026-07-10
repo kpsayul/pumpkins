@@ -100,11 +100,39 @@ LLM의 역할은 두 갈래:
 
 방어 로직: LLM이 반환한 verdict index가 범위 밖이면 경고 후 무시. `parsed_output`이 None이면 명시적 에러.
 
+### Stage 3.5 — 컨벤션 대조 (`conventions/checker.py`)
+
+| 항목 | 내용 |
+|---|---|
+| 입력 | `DiffScope` + `<repo>/conventions.yml`의 채택 규칙 (`facet`/`value`) |
+| 출력 | 질문형 `Finding[]` (`source: convention`, severity `low` 고정 — 네이밍이 버그를 이기지 않게) |
+| 실행 조건 | conventions.yml 존재 시 자동 (`--conventions PATH` / `--no-conventions`) — **LLM·API 키 불필요, 결정적** |
+
+- diff의 **추가 라인에서 선언된 식별자만** 검사. 멤버 변수 매칭은 hunk에 클래스 스캐폴딩(`private:` 등)이 보일 때만 — 없으면 지역 변수로 간주하고 건너뜀 (오탐 억제).
+- 지적은 질문형 + 근거 수치 + (prefix/suffix 규칙이면) rename 제안. `(file, rule, name)` 단위로 중복 제거.
+- `facet: other` 규칙은 기계 대조 불가 — 파일에는 남고, LLM 문맥 보조(설계 문서 방안 B)가 후속으로 담당.
+
 ### Stage 4 — 리포트 (`report/markdown.py`)
 
 - 헤더 메타데이터: 생성 시각, diff base, 프로파일, **분석 모드(얕은 모드 경고 포함)**, LLM 사용 여부, 진단 수 흐름 (`raw → dropped → findings`).
 - Finding은 심각도순 정렬(critical→info), 심각도별 이모지 요약.
 - stdout이 기본 출력이라 파이프 가능 — 로그는 전부 stderr (`config.setup_logging`).
+
+## Learn 파이프라인 (`conventions/`) — `pumpkins learn`
+
+리뷰 파이프라인과 별개로 도는 2단계 흐름. 설계 근거는 [convention-detection-design.md](convention-detection-design.md).
+
+```
+repo 스캔 ──▶ CategoryStats[] ──▶ LearnResult ──▶ conventions.yml
+        conventions/extractor   conventions/learner   (대상 리포에 커밋)
+```
+
+| 단계 | 내용 |
+|---|---|
+| L1 `extractor.py` | 정규식 기반 C++ 식별자 추출(멤버/함수/클래스) → 접두사·접미사·casing 분포 통계. **LLM엔 이 통계+샘플만 전달** — 파일 원문은 절대 안 보냄 (토큰 비용 절감). 파서가 아닌 휴리스틱 — tree-sitter가 업그레이드 경로 |
+| L2 `learner.py` | LLM(`DEFAULT_LEARN_MODEL`, Sonnet)이 규칙 후보 판정 → **코드 측 임계선 게이트**(`MIN_RULE_OCCURRENCES`/`MIN_RULE_CONSISTENCY`)가 LLM 판단과 무관하게 미달 규칙을 강등 → 사람이 검수하는 `conventions.yml` 렌더 (rejected 후보·원본 통계도 포함해 투명성 확보) |
+
+실패 처리: C++ 식별자 0개면 에러(exit 1), API 키 없으면 에러 + `--no-llm`(통계 덤프) 안내.
 
 ## 체크 프로파일 (`analysis/checks.py`)
 

@@ -27,6 +27,12 @@ def render_markdown(result: ReviewResult) -> str:
     lines.append(f"- analysis mode: {mode}")
     llm = "yes" if result.llm_used else "no (raw clang-tidy output, untriaged)"
     lines.append(f"- LLM triage: {llm}")
+    conv = (
+        f"{result.conventions_loaded} rule(s) from conventions.yml"
+        if result.conventions_loaded
+        else "not loaded"
+    )
+    lines.append(f"- conventions: {conv}")
     lines.append(
         f"- diagnostics: {result.total_diagnostics} raw → "
         f"{result.dropped_as_noise} dropped as noise → {len(result.findings)} finding(s)"

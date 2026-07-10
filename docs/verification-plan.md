@@ -8,6 +8,13 @@
 즉 "사람이 리뷰에서 손으로 짚던 것"을 정답지로 삼고, 도구가 그걸 얼마나 되짚어내는지를 잽니다.
 (빌드 여부·정적 분석기 종류는 수단일 뿐, 검증 대상이 아닙니다.)
 
+## 실행 도구
+
+`python verification/run_verification.py` — Track A 주입 검증을 자동화한 드라이버.
+키 불필요 단계(주입 recall/precision, CLI 스모크)는 실제 실행하고, 키 필요 단계(learn 품질·모델
+비교·리뷰 LLM e2e)는 스켈레톤이라 자동 skip — **키가 없어도 flow 전체가 끝까지 돈다.**
+채점표는 `verification/results/`에 누적.
+
 ## Track A — 컨벤션 위반 재현 (핵심)
 
 명확한 코딩 컨벤션을 가진 리포에서, 규칙을 어긴 변경을 도구가 짚는지 확인합니다. 정답지는 두 갈래:
@@ -64,6 +71,7 @@ pumpkins --repo . --base B^ --out report.md
 | Precision | 도구 finding 중 사람이 봐도 유효한 비율 | ≥ 60% |
 | 노이즈 감소율 | LLM triage가 버린 raw 진단 중 실제 노이즈였던 비율 | ≥ 80% |
 | LLM 기여도 | 전체 유효 finding 중 `source: llm` 비율 | 기록만 (설계 판단용) |
+| **모델 비교 (learn)** | 같은 리포의 컨벤션 추출을 Sonnet/Haiku/Opus로 각각 실행 → 추출 규칙의 정확도 비교 | Sonnet이 Opus 대비 손실 없으면 Sonnet 확정 ([설계 문서 §4](convention-detection-design.md) 모델 전략 검증) |
 | 비용/시간 | diff당 토큰 비용, wall time | 기록만 |
 
 기록 방법: 샘플별로 `report.md`와 함께 아래 형식의 채점표를 남김.

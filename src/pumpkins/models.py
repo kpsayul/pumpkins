@@ -73,7 +73,7 @@ class Finding(BaseModel):
     title: str
     explanation: str
     suggestion: str = ""  # human-readable fix proposal (may contain a code block)
-    source: str = "clang-tidy"  # "clang-tidy" | "llm"
+    source: str = "clang-tidy"  # "clang-tidy" | "llm" | "convention"
 
 
 class ReviewResult(BaseModel):
@@ -83,6 +83,7 @@ class ReviewResult(BaseModel):
     profile: str = "concurrency"
     shallow_mode: bool = False
     llm_used: bool = False
+    conventions_loaded: int = 0  # adopted rules loaded from conventions.yml
     total_diagnostics: int = 0
     dropped_as_noise: int = 0
     findings: list[Finding] = Field(default_factory=list)

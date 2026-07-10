@@ -34,7 +34,8 @@ CHECK_PROFILES: dict[str, list[str]] = {
 
 > **컨벤션 프로파일의 핵심은 clang-tidy가 아니라 LLM입니다.** `readability-identifier-naming`은
 > 규칙을 사람이 명시해줘야 동작하지만, 이 아이템이 노리는 건 *"리포 기존 코드에서 관행을 읽어내
-> 어긋난 곳을 짚는"* 것 — 그건 아래 프롬프트 확장으로 구현합니다.
+> 어긋난 곳을 짚는"* 것 — 구체적인 구현 방향(사전 학습형 `conventions.yml` 등)은
+> [convention-detection-design.md](convention-detection-design.md)에 확정되어 있습니다.
 
 프로파일에 맞춰 **LLM 프롬프트도 갱신**해야 합니다 — [llm/postprocess.py](../src/pumpkins/llm/postprocess.py)의
 `_SYSTEM_PROMPT` task 3 목록이 concurrency 전용으로 하드코딩되어 있으므로, 프로파일이 늘어나면
@@ -70,7 +71,7 @@ Stage 4의 계약은 `render_*(result: ReviewResult) -> str`입니다.
 
 | 조정 | 위치 | 비고 |
 |---|---|---|
-| 모델 변경 | CLI `--model` 또는 `config.DEFAULT_MODEL` | 기본 `claude-opus-4-8` |
+| 모델 변경 | CLI `--model` 또는 `config.DEFAULT_REVIEW_MODEL` / `DEFAULT_LEARN_MODEL` | 리뷰 `claude-opus-4-8`, 학습 `claude-sonnet-5` — 단계별 근거는 [설계 문서 §4](convention-detection-design.md) |
 | 프롬프트 | `llm/postprocess.py` `_SYSTEM_PROMPT` | 실패 시나리오를 구체적으로 쓰게 하는 문구가 핵심 |
 | 출력 스키마 | `_Verdict`, `_ExtraFinding`, `_LlmReview` | Pydantic 모델 수정만으로 스키마 강제 유지 |
 | 대형 diff 청킹 | `process()` 호출 전 `DiffScope` 분할 | 파일 단위 분할 → 호출 병렬화 순서로 |

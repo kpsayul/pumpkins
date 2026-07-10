@@ -18,20 +18,26 @@
 
 → 핵심 가치는 **"사람이 리뷰에서 하던 판단을 대신 던져준다"** 는 것입니다. 정적 분석기 한 대가 아니라, 리뷰어처럼 말을 걸어주는 도우미를 지향합니다.
 
-## 지금 구현된 것 (첫 조각)
+## 지금 구현된 것
 
-현재 코드는 위 두 축 중 **기능적 문제(동시성)** 쪽 파이프라인이 먼저 들어가 있습니다.
+**① 기능적 문제(동시성) 리뷰 파이프라인** — `pumpkins`
 
 git diff → clang-tidy 정적 분석 → LLM(Claude) 후처리(노이즈 제거·심각도 판정·설명/수정안 생성) → 마크다운 리포트.
 
 - **clang-tidy는 정밀한 그물, LLM은 diff를 직접 읽어 규칙·패턴을 잡는 넓은 그물** 역할. 리뷰어처럼 판단하는 몫은 LLM이 맡습니다.
 - 변경 라인 주변(±15줄)만 봅니다. 대상 프로젝트를 **빌드하지 않아도 동작** 하는데, 이건 도입 마찰을 낮추기 위한 선택이지 그 자체가 목적은 아닙니다.
-- **컨벤션 규칙 체크는 아직 본격화 전** — 지금은 동시성 위주고, 프로젝트 규칙 학습·지적이 다음 핵심 과제입니다.
+
+**② 컨벤션 학습 + 지적 (MVP 1·2단계)** — `pumpkins learn` → 리뷰에 자동 연결
+
+리포 스캔 → 식별자 명명 통계(기계적 추출 — LLM엔 통계 요약만 전달) → LLM 규칙 판정 → 임계선 게이트(20회+/85%+) → 사람이 검수·커밋하는 **`conventions.yml`** 생성.
+
+이후 리뷰(`pumpkins`) 실행 시 `<repo>/conventions.yml`이 있으면 diff를 규칙과 대조해 **질문형으로 지적**합니다 — *"`running` — 멤버 변수는 `m_` 접두사를 사용한다 관행과 다른 것 같아요. 여기만 다르게 한 이유가 있을까요?"* (근거 수치 + rename 제안 포함). 이 대조는 결정적이라 **API 키 없이도 동작**합니다.
 
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
+| [docs/convention-detection-design.md](docs/convention-detection-design.md) | **핵심 기능 설계 검토** — 사람 리뷰어의 지적을 자동화하는 방안(A/B/C), 설계 결정, 리스크, MVP 경로 |
 | [docs/architecture.md](docs/architecture.md) | 현재 파이프라인 단계별 상세 설계, 분석 모드, 실패 처리 원칙 |
 | [docs/verification-plan.md](docs/verification-plan.md) | "리뷰어의 판단을 재현할 수 있는가" 검증 방법, 측정 지표, 채택/기각 기준 |
 | [docs/extending.md](docs/extending.md) | 규칙(체크) 프로파일·diff 소스·분석기·리포트 포맷 확장 방법 |
@@ -51,6 +57,9 @@ git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ─�
 | `llm/postprocess.py` | Claude 구조화 출력으로 노이즈 필터 + 심각도 + 설명/수정안 + 추가 탐지 |
 | `report/markdown.py` | 마크다운 리포트 렌더링 |
 | `models.py` | 단계 간 데이터 계약 (`DiffScope`, `RawDiagnostic`, `Finding`, `ReviewResult`) |
+| `conventions/extractor.py` | (learn L1) 정규식 기반 식별자 추출 → 명명 통계 |
+| `conventions/learner.py` | (learn L2) LLM 규칙 판정 + 임계선 게이트 + `conventions.yml` 렌더 |
+| `conventions/checker.py` | (리뷰 3.5단계) diff를 `conventions.yml`과 결정적 대조 → 질문형 finding |
 
 ## 빠른 시작
 
@@ -144,7 +153,24 @@ pumpkins --repo /path/to/cpp/project --base main --out report.md
 pumpkins --repo /path/to/cpp/project --no-llm -v
 ```
 
-주요 옵션: `--profile concurrency`(체크 프로파일 — 현재는 동시성만, 앞으로 컨벤션 등 추가 예정), `--model`(기본 `claude-opus-4-8`), `-v`(디버그 로그).
+컨벤션 학습 → 지적:
+
+```bash
+# 1) 리포의 명명 관행을 학습해 conventions.yml 생성 (검수 후 커밋)
+pumpkins learn --repo /path/to/cpp/project
+
+# 2) 이후의 리뷰는 conventions.yml을 자동으로 대조 (API 키 없이도 이 단계는 동작)
+pumpkins --repo /path/to/cpp/project --no-llm
+
+# LLM 없이, LLM에 전달될 통계 원본만 출력 (learn 디버깅용)
+pumpkins learn --repo /path/to/cpp/project --no-llm
+```
+
+컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/conventions.yml`), `--no-conventions`(대조 끄기).
+
+주요 옵션: `--profile concurrency`(체크 프로파일 — 현재는 동시성만, 앞으로 컨벤션 등 추가 예정), `--model`(리뷰 기본 `claude-opus-4-8`), `-v`(디버그 로그).
+
+> 모델은 단계별로 다르게 씁니다 — 리뷰(triage)는 정밀도가 생존이라 Opus, 컨벤션 학습(`learn`, 예정)은 구조화 판정이라 Sonnet. 근거는 [설계 문서 §4](docs/convention-detection-design.md).
 
 ## 테스트
 
@@ -160,7 +186,7 @@ pytest
 
 ## 다음 단계
 
-1. **프로젝트 컨벤션 학습·지적 (핵심 차별화).** 리포의 기존 코드에서 명명·구조 관행(멤버 `m_` 접두사, 함수명 casing 등)을 추출하고, diff가 그 관행을 어겼는지 LLM으로 판정해 리뷰어처럼 지적. → 이게 이 아이템의 본체.
+1. **컨벤션 지적을 리뷰에 연결 (핵심 차별화).** 학습(`pumpkins learn` — ✅ 구현됨)으로 만든 `conventions.yml`을 리뷰 파이프라인에 물려, diff가 관행을 어기면 질문형으로 지적. 구현 방향은 [docs/convention-detection-design.md](docs/convention-detection-design.md)에 확정.
 2. **규칙 프로파일에 컨벤션/스타일 카테고리 추가** — 현재 `concurrency`뿐인 `CHECK_PROFILES`를 규칙 종류별로 확장.
 3. **검증** — 실제 리뷰 코멘트·컨벤션 위반이 남아있는 PR을 샘플로, 사람이 짚었던 걸 도구가 얼마나 재현하는지(recall/precision) 측정.
 4. 대형 diff 청킹 및 파일별 LLM 호출 병렬화.
