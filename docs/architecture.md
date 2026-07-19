@@ -81,8 +81,9 @@
 |---|---|
 | 입력 | `DiffScope` + `RawDiagnostic[]` + shallow 여부 |
 | 출력 | `Finding[]` + 노이즈로 버린 개수 |
-| 모델 | `claude-opus-4-8` (기본, `--model`로 변경 가능) |
-| API | `client.messages.parse()` + Pydantic 스키마 → 구조화 출력 강제 |
+| 프로바이더 | `LLM_PROVIDER` 환경변수로 anthropic/openai 선택 (`llm/provider.py` 어댑터) |
+| 모델 | anthropic: `claude-opus-4-8` / openai: `gpt-4o` (기본, `--model`로 변경 가능) |
+| API | 프로바이더별 구조화 출력 호출(anthropic `messages.parse` / openai `beta.chat.completions.parse`) + Pydantic 스키마 → 구조화 출력 강제 |
 
 LLM의 역할은 두 갈래:
 
@@ -96,9 +97,9 @@ LLM의 역할은 두 갈래:
 
    → 요청한 핵심 버그 클래스의 실질 커버리지는 이쪽입니다. clang-tidy는 정밀 필터, LLM은 넓은 그물.
 
-인증: `anthropic.Anthropic()`가 `ANTHROPIC_API_KEY` 환경변수를 직접 읽음. 코드·설정 파일에 키 없음.
+인증: 각 SDK가 자기 키(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`)를 환경변수에서 직접 읽음. 코드·커밋되는 설정 파일에 키 없음. CLI 진입 시 cwd의 `.env`를 자동 로드하되 실제 환경변수가 우선(`override=False`) — 설계는 [llm-provider-and-keys-design.md](llm-provider-and-keys-design.md).
 
-방어 로직: LLM이 반환한 verdict index가 범위 밖이면 경고 후 무시. `parsed_output`이 None이면 명시적 에러.
+방어 로직: LLM이 반환한 verdict index가 범위 밖이면 경고 후 무시. 파싱 결과가 None이면 명시적 에러.
 
 ### Stage 3.5 — 컨벤션 대조 (`conventions/checker.py`)
 
@@ -130,7 +131,7 @@ repo 스캔 ──▶ CategoryStats[] ──▶ LearnResult ──▶ convention
 | 단계 | 내용 |
 |---|---|
 | L1 `extractor.py` | 정규식 기반 C++ 식별자 추출(멤버/함수/클래스) → 접두사·접미사·casing 분포 통계. **LLM엔 이 통계+샘플만 전달** — 파일 원문은 절대 안 보냄 (토큰 비용 절감). 파서가 아닌 휴리스틱 — tree-sitter가 업그레이드 경로 |
-| L2 `learner.py` | LLM(`DEFAULT_LEARN_MODEL`, Sonnet)이 규칙 후보 판정 → **코드 측 임계선 게이트**(`MIN_RULE_OCCURRENCES`/`MIN_RULE_CONSISTENCY`)가 LLM 판단과 무관하게 미달 규칙을 강등 → 사람이 검수하는 `conventions.yml` 렌더 (rejected 후보·원본 통계도 포함해 투명성 확보) |
+| L2 `learner.py` | LLM(learn 기본 모델 — anthropic: Sonnet / openai: gpt-4o-mini)이 규칙 후보 판정 → **코드 측 임계선 게이트**(`MIN_RULE_OCCURRENCES`/`MIN_RULE_CONSISTENCY`)가 LLM 판단과 무관하게 미달 규칙을 강등 → 사람이 검수하는 `conventions.yml` 렌더 (rejected 후보·원본 통계도 포함해 투명성 확보) |
 
 실패 처리: C++ 식별자 0개면 에러(exit 1), API 키 없으면 에러 + `--no-llm`(통계 덤프) 안내.
 
@@ -146,7 +147,8 @@ repo 스캔 ──▶ CategoryStats[] ──▶ LearnResult ──▶ convention
 |---|---|
 | diff에 C++ 변경 없음 | 경고 후 빈 리포트 (exit 0) |
 | clang-tidy 미설치 | 즉시 에러 (exit 1) |
-| `ANTHROPIC_API_KEY` 없음 | 경고 후 `--no-llm` 동작으로 폴백 |
+| 선택된 프로바이더의 API 키 없음 (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`) | 경고 후 `--no-llm` 동작으로 폴백 |
+| `LLM_PROVIDER` 값이 anthropic/openai 밖 | 즉시 에러 (exit 2) |
 | LLM 파싱 실패 | 에러 (exit 1) — 조용히 미검증 결과를 내지 않음 |
 | 얕은 모드 컴파일 에러 | 버리고 계속 (예상된 노이즈) |
 

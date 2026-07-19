@@ -11,15 +11,19 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
+
+from dotenv import find_dotenv, load_dotenv
 
 from pumpkins.analysis import CHECK_PROFILES, ClangTidyRunner
 from pumpkins.config import (
     CONVENTIONS_FILENAME,
-    DEFAULT_LEARN_MODEL,
-    DEFAULT_REVIEW_MODEL,
+    current_provider,
+    default_learn_model,
+    default_review_model,
+    has_api_key,
+    required_key_env,
     setup_logging,
 )
 from pumpkins.diff import collect_diff
@@ -41,8 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", default="concurrency", choices=sorted(CHECK_PROFILES), help="check profile")
     p.add_argument(
         "--model",
-        default=DEFAULT_REVIEW_MODEL,
-        help=f"Claude model for review triage (default: {DEFAULT_REVIEW_MODEL})",
+        default=default_review_model(),
+        help=f"review triage model (default for LLM_PROVIDER={current_provider()}: "
+        f"{default_review_model()})",
     )
     p.add_argument("--no-llm", action="store_true", help="skip LLM triage; emit raw clang-tidy findings")
     p.add_argument(
@@ -80,12 +85,15 @@ def run_pipeline(args: argparse.Namespace) -> ReviewResult:
 
     # Stage 3 — LLM triage (optional)
     use_llm = not args.no_llm
-    if use_llm and not os.environ.get("ANTHROPIC_API_KEY"):
-        log.warning("ANTHROPIC_API_KEY not set — falling back to --no-llm behavior")
+    if use_llm and not has_api_key():
+        log.warning(
+            "%s not set (LLM_PROVIDER=%s) — falling back to --no-llm behavior",
+            required_key_env(), current_provider(),
+        )
         use_llm = False
 
     if use_llm:
-        # Imported lazily so --no-llm works without the anthropic package configured.
+        # Imported lazily so --no-llm works without the provider SDK configured.
         from pumpkins.llm import LlmPostProcessor
 
         processor = LlmPostProcessor(model=args.model)
@@ -143,8 +151,9 @@ def build_learn_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--model",
-        default=DEFAULT_LEARN_MODEL,
-        help=f"Claude model for rule judgment (default: {DEFAULT_LEARN_MODEL})",
+        default=default_learn_model(),
+        help=f"rule judgment model (default for LLM_PROVIDER={current_provider()}: "
+        f"{default_learn_model()})",
     )
     p.add_argument(
         "--no-llm",
@@ -160,7 +169,7 @@ def run_learn(argv: list[str]) -> int:
     setup_logging(args.verbose)
 
     # Imported lazily, like the review pipeline's LLM stage, so the review
-    # path never pays for pyyaml/anthropic imports it doesn't use.
+    # path never pays for pyyaml/provider-SDK imports it doesn't use.
     from pumpkins.conventions import (
         ConventionLearner,
         extract_stats,
@@ -183,10 +192,11 @@ def run_learn(argv: list[str]) -> int:
                 print(text)
             return 0
 
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        if not has_api_key():
             log.error(
-                "ANTHROPIC_API_KEY not set — rule judgment needs the LLM "
-                "(use --no-llm to inspect the raw statistics)"
+                "%s not set (LLM_PROVIDER=%s) — rule judgment needs the LLM "
+                "(use --no-llm to inspect the raw statistics)",
+                required_key_env(), current_provider(),
             )
             return 1
 
@@ -207,6 +217,17 @@ def run_learn(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # .env fills in LLM_PROVIDER / API keys for people who prefer a file over
+    # shell exports; real environment variables win (override=False).
+    # usecwd=True: search from the invocation directory upward — without it,
+    # find_dotenv would search from this installed file's location instead.
+    load_dotenv(find_dotenv(usecwd=True))
+    try:
+        current_provider()  # fail fast on a bad LLM_PROVIDER before argparse defaults resolve
+    except ValueError as exc:
+        print(f"pumpkins: {exc}", file=sys.stderr)
+        return 2
+
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "learn":
         return run_learn(argv[1:])

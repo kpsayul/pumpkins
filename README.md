@@ -22,7 +22,7 @@
 
 **① 기능적 문제(동시성) 리뷰 파이프라인** — `pumpkins`
 
-git diff → clang-tidy 정적 분석 → LLM(Claude) 후처리(노이즈 제거·심각도 판정·설명/수정안 생성) → 마크다운 리포트.
+git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처리(노이즈 제거·심각도 판정·설명/수정안 생성) → 마크다운 리포트.
 
 - **clang-tidy는 정밀한 그물, LLM은 diff를 직접 읽어 규칙·패턴을 잡는 넓은 그물** 역할. 리뷰어처럼 판단하는 몫은 LLM이 맡습니다.
 - 변경 라인 주변(±15줄)만 봅니다. 대상 프로젝트를 **빌드하지 않아도 동작** 하는데, 이건 도입 마찰을 낮추기 위한 선택이지 그 자체가 목적은 아닙니다.
@@ -41,6 +41,7 @@ git diff → clang-tidy 정적 분석 → LLM(Claude) 후처리(노이즈 제거
 | [docs/architecture.md](docs/architecture.md) | 현재 파이프라인 단계별 상세 설계, 분석 모드, 실패 처리 원칙 |
 | [docs/verification-plan.md](docs/verification-plan.md) | "리뷰어의 판단을 재현할 수 있는가" 검증 방법, 측정 지표, 채택/기각 기준 |
 | [docs/extending.md](docs/extending.md) | 규칙(체크) 프로파일·diff 소스·분석기·리포트 포맷 확장 방법 |
+| [docs/llm-provider-and-keys-design.md](docs/llm-provider-and-keys-design.md) | LLM 프로바이더(Claude/GPT) 전환 & API 키 관리 설계 |
 
 ## 아키텍처
 
@@ -54,7 +55,8 @@ git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ─�
 | `diff/collector.py` | `git diff` 수집·파싱 → 파일별 변경 라인 범위 + hunk 문맥 |
 | `analysis/clang_tidy.py` | clang-tidy를 별도 프로세스로 실행, 진단 파싱 (compile-DB / 얕은 모드) |
 | `analysis/checks.py` | 체크 프로파일 (현재 `concurrency`, 확장 가능) |
-| `llm/postprocess.py` | Claude 구조화 출력으로 노이즈 필터 + 심각도 + 설명/수정안 + 추가 탐지 |
+| `llm/provider.py` | LLM 프로바이더 어댑터 — `LLM_PROVIDER`(anthropic/openai)에 따라 구조화 출력 클라이언트 선택 |
+| `llm/postprocess.py` | LLM 구조화 출력으로 노이즈 필터 + 심각도 + 설명/수정안 + 추가 탐지 |
 | `report/markdown.py` | 마크다운 리포트 렌더링 |
 | `models.py` | 단계 간 데이터 계약 (`DiffScope`, `RawDiagnostic`, `Finding`, `ReviewResult`) |
 | `conventions/extractor.py` | (learn L1) 정규식 기반 식별자 추출 → 명명 통계 |
@@ -121,15 +123,28 @@ python -m pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
-### 4. API 키 설정
+### 4. LLM 프로바이더 & API 키 설정
 
-Anthropic API 키를 **환경변수로만** 전달합니다 (코드/파일에 하드코딩 금지).
+Claude(Anthropic)와 GPT(OpenAI) 중 하나를 골라 씁니다. 키는 **환경변수로만** 전달합니다 (코드에 하드코딩 금지). 가장 쉬운 방법은 `.env` 파일:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+cp .env.example .env
+# .env를 열어 LLM_PROVIDER와 쓰는 쪽 키를 채우세요:
+#   LLM_PROVIDER=anthropic   (또는 openai)
+#   ANTHROPIC_API_KEY=sk-ant-...
+#   OPENAI_API_KEY=sk-...
 ```
 
-> 매번 export 하기 번거로우면 `.venv/bin/activate` 마지막 줄에 위 export를 추가해 두면 활성화할 때 자동 설정됩니다. (키가 담긴 파일은 커밋 금지)
+`.env`는 `.gitignore`에 등록돼 있어 커밋되지 않습니다 — 사람마다 각자 만듭니다. CLI가 실행 시 현재 디렉터리의 `.env`를 자동으로 읽습니다.
+
+셸에서 직접 export해도 됩니다 (이 값이 `.env`보다 **우선**합니다 — CI나 일시적 전환에 유용):
+
+```bash
+export LLM_PROVIDER=openai
+export OPENAI_API_KEY=sk-...
+```
+
+> 설계 배경(전환 로직·키 관리 원칙)은 [docs/llm-provider-and-keys-design.md](docs/llm-provider-and-keys-design.md).
 
 ### 5. 설치 확인
 
@@ -168,9 +183,9 @@ pumpkins learn --repo /path/to/cpp/project --no-llm
 
 컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/conventions.yml`), `--no-conventions`(대조 끄기).
 
-주요 옵션: `--profile concurrency`(체크 프로파일 — 현재는 동시성만, 앞으로 컨벤션 등 추가 예정), `--model`(리뷰 기본 `claude-opus-4-8`), `-v`(디버그 로그).
+주요 옵션: `--profile concurrency`(체크 프로파일 — 현재는 동시성만, 앞으로 컨벤션 등 추가 예정), `--model`(프로바이더별 기본값 오버라이드), `-v`(디버그 로그).
 
-> 모델은 단계별로 다르게 씁니다 — 리뷰(triage)는 정밀도가 생존이라 Opus, 컨벤션 학습(`learn`, 예정)은 구조화 판정이라 Sonnet. 근거는 [설계 문서 §4](docs/convention-detection-design.md).
+> 모델은 단계별로 다르게 씁니다 — 리뷰(triage)는 정밀도가 생존이라 강한 모델(anthropic: `claude-opus-4-8` / openai: `gpt-4o`), 컨벤션 학습(`learn`)은 구조화 판정이라 저렴한 쪽(anthropic: `claude-sonnet-5` / openai: `gpt-4o-mini`). 근거는 [설계 문서 §4](docs/convention-detection-design.md).
 
 ## 테스트
 

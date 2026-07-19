@@ -1,4 +1,4 @@
-"""Stage 3 — LLM post-processing (Claude).
+"""Stage 3 — LLM post-processing.
 
 Takes clang-tidy diagnostics + diff context and produces triaged findings:
 
@@ -9,18 +9,19 @@ Takes clang-tidy diagnostics + diff context and produces triaged findings:
      clang-tidy cannot detect (lock-order inversion, unguarded shared member
      access, volatile misused for synchronization)
 
-Auth: the anthropic SDK reads ANTHROPIC_API_KEY from the environment — the key
-is never passed around in code.
+The provider (Claude / GPT) is selected by LLM_PROVIDER via llm/provider.py;
+auth is each SDK reading its own key from the environment — keys are never
+passed around in code.
 """
 
 from __future__ import annotations
 
 import logging
 
-import anthropic
 from pydantic import BaseModel, Field
 
-from pumpkins.config import DEFAULT_REVIEW_MODEL
+from pumpkins.config import default_review_model
+from pumpkins.llm.provider import get_client
 from pumpkins.models import DiffScope, Finding, RawDiagnostic, Severity
 
 log = logging.getLogger(__name__)
@@ -78,22 +79,22 @@ class _LlmReview(BaseModel):
 
 
 class LlmPostProcessor:
-    def __init__(self, model: str = DEFAULT_REVIEW_MODEL):
-        self.model = model
-        self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    def __init__(self, model: str | None = None):
+        self.model = model or default_review_model()
+        self.client = get_client()  # provider from LLM_PROVIDER; key from env
 
     def process(
         self, scope: DiffScope, diagnostics: list[RawDiagnostic], shallow_mode: bool
     ) -> tuple[list[Finding], int]:
         """Returns (findings, dropped_as_noise_count)."""
-        response = self.client.messages.parse(
+        result = self.client.parse(
             model=self.model,
             max_tokens=16000,
             system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": self._build_prompt(scope, diagnostics, shallow_mode)}],
-            output_format=_LlmReview,
+            user=self._build_prompt(scope, diagnostics, shallow_mode),
+            schema=_LlmReview,
         )
-        review = response.parsed_output
+        review = result.parsed
         if review is None:
             raise RuntimeError("LLM returned no parseable review output")
         log.info(
@@ -101,8 +102,8 @@ class LlmPostProcessor:
             sum(v.keep for v in review.verdicts),
             len(diagnostics),
             len(review.extra_findings),
-            response.usage.input_tokens,
-            response.usage.output_tokens,
+            result.input_tokens,
+            result.output_tokens,
         )
         return self._to_findings(review, diagnostics)
 

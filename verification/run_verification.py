@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import subprocess
@@ -35,7 +34,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pumpkins.config import setup_logging
+from dotenv import find_dotenv, load_dotenv
+
+from pumpkins.config import current_provider, has_api_key, required_key_env, setup_logging
 from pumpkins.conventions import check_scope, load_conventions
 from pumpkins.diff import collect_diff
 
@@ -44,7 +45,10 @@ FIXTURE = ROOT / "fixture"
 RESULTS = ROOT / "results"
 PASS_LINE = 0.8  # 주입 검증 통과선 (fixture는 통제 환경 — 사실상 1.0이 기대값)
 
-HAS_KEY = bool(os.environ.get("ANTHROPIC_API_KEY"))
+load_dotenv(find_dotenv(usecwd=True))  # .env의 LLM_PROVIDER/키 반영 — 실제 환경변수가 우선 (CLI와 동일)
+PROVIDER = current_provider()
+KEY_ENV = required_key_env()
+HAS_KEY = has_api_key()
 
 
 # ------------------------------------------------------------- injection spec
@@ -220,7 +224,7 @@ def step_learn_quality(workdir: Path) -> StepResult:
       3. 규칙 recall/precision을 채점표에 기록
     """
     if not HAS_KEY:
-        return StepResult("[3] learn 품질 검증", "skipped", "ANTHROPIC_API_KEY 없음")
+        return StepResult("[3] learn 품질 검증", "skipped", f"{KEY_ENV} 없음")
     return StepResult("[3] learn 품질 검증", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
 
 
@@ -234,7 +238,7 @@ def step_model_comparison(workdir: Path) -> StepResult:
       → 정답지 대비 정확도 + usage 토큰 비용 표 생성
     """
     if not HAS_KEY:
-        return StepResult("[4] 모델 비교", "skipped", "ANTHROPIC_API_KEY 없음")
+        return StepResult("[4] 모델 비교", "skipped", f"{KEY_ENV} 없음")
     return StepResult("[4] 모델 비교", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
 
 
@@ -242,7 +246,7 @@ def step_review_llm_e2e(workdir: Path) -> StepResult:
     """[5] (키 필요 — 스켈레톤) 리뷰 LLM triage e2e: `pumpkins --repo <workdir>`
     (LLM 켬)를 1회 실행해 triage·extra findings·토큰 사용량을 기록."""
     if not HAS_KEY:
-        return StepResult("[5] 리뷰 LLM triage e2e", "skipped", "ANTHROPIC_API_KEY 없음")
+        return StepResult("[5] 리뷰 LLM triage e2e", "skipped", f"{KEY_ENV} 없음")
     return StepResult("[5] 리뷰 LLM triage e2e", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
 
 
@@ -256,7 +260,8 @@ def write_scorecard(steps: list[StepResult], metrics: dict) -> Path:
         "# pumpkins 자기 검증 채점표",
         "",
         f"- 실행: {now.strftime('%Y-%m-%d %H:%M UTC')}",
-        f"- API 키: {'있음' if HAS_KEY else '없음 (키 필요 단계는 skip)'}",
+        f"- LLM 프로바이더: {PROVIDER} / API 키({KEY_ENV}): "
+        f"{'있음' if HAS_KEY else '없음 (키 필요 단계는 skip)'}",
         f"- 통과선: recall/precision ≥ {PASS_LINE:.0%} (fixture 통제 환경)",
         "",
         "| 단계 | 결과 | 상세 |",

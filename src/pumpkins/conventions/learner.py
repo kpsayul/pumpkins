@@ -1,10 +1,10 @@
 """Convention learning, stage L2 — LLM judgment + threshold gate + YAML render.
 
-Receives the naming statistics from stage L1 (extractor.py) and asks Claude to
+Receives the naming statistics from stage L1 (extractor.py) and asks the LLM to
 judge which patterns are actual *rules* of the project. The LLM's job here is
 deliberately narrow — structured stats in, structured rules out — which is why
-the cheaper DEFAULT_LEARN_MODEL suffices (docs/convention-detection-design.md
-§4). The review pipeline keeps the stronger model.
+the cheaper learn-tier model suffices (docs/convention-detection-design.md §4).
+The review pipeline keeps the stronger model.
 
 Two safeguards from the design doc:
 - threshold gate (§3-(2)) is enforced *in code*, not just in the prompt — a
@@ -13,7 +13,8 @@ Two safeguards from the design doc:
 - the output is a human-reviewable conventions.yml (§3-(1)) meant to be
   committed to the target repo; people can edit or delete rules.
 
-Auth: the anthropic SDK reads ANTHROPIC_API_KEY from the environment.
+The provider (Claude / GPT) is selected by LLM_PROVIDER via llm/provider.py;
+each SDK reads its own API key from the environment.
 """
 
 from __future__ import annotations
@@ -23,16 +24,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-import anthropic
 import yaml
 from pydantic import BaseModel, Field
 
 from pumpkins.config import (
-    DEFAULT_LEARN_MODEL,
     MIN_RULE_CONSISTENCY,
     MIN_RULE_OCCURRENCES,
+    default_learn_model,
 )
 from pumpkins.conventions.extractor import CategoryStats
+from pumpkins.llm.provider import get_client
 
 log = logging.getLogger(__name__)
 
@@ -138,29 +139,29 @@ def apply_threshold_gate(result: LearnResult) -> LearnResult:
 
 
 class ConventionLearner:
-    def __init__(self, model: str = DEFAULT_LEARN_MODEL):
-        self.model = model
-        self.client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
+    def __init__(self, model: str | None = None):
+        self.model = model or default_learn_model()
+        self.client = get_client()  # provider from LLM_PROVIDER; key from env
 
     def learn(self, stats: list[CategoryStats]) -> LearnResult:
-        response = self.client.messages.parse(
+        parsed = self.client.parse(
             model=self.model,
             max_tokens=8000,
             system=_SYSTEM_PROMPT_TEMPLATE.format(
                 min_occ=MIN_RULE_OCCURRENCES, min_cons=MIN_RULE_CONSISTENCY
             ),
-            messages=[{"role": "user", "content": _render_stats_text(stats)}],
-            output_format=LearnResult,
+            user=_render_stats_text(stats),
+            schema=LearnResult,
         )
-        result = response.parsed_output
+        result = parsed.parsed
         if result is None:
             raise RuntimeError("LLM returned no parseable convention output")
         log.info(
             "LLM proposed %d rule(s), %d rejection(s); tokens in=%d out=%d",
             len(result.rules),
             len(result.rejected),
-            response.usage.input_tokens,
-            response.usage.output_tokens,
+            parsed.input_tokens,
+            parsed.output_tokens,
         )
         return apply_threshold_gate(result)
 
