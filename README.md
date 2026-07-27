@@ -26,12 +26,17 @@ git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처�
 
 - **clang-tidy는 정밀한 그물, LLM은 diff를 직접 읽어 규칙·패턴을 잡는 넓은 그물** 역할. 리뷰어처럼 판단하는 몫은 LLM이 맡습니다.
 - 변경 라인 주변(±15줄)만 봅니다. 대상 프로젝트를 **빌드하지 않아도 동작** 하는데, 이건 도입 마찰을 낮추기 위한 선택이지 그 자체가 목적은 아닙니다.
+- **못 본 것을 말합니다.** 확장자 때문에 안 읽은 파일과 정적 분석이 불가능했던 헤더를 리포트에 이유와 함께 나열하고, 그런 공백이 있으면 finding이 0건이어도 `✅`를 쓰지 않습니다. "검사했는데 깨끗함"과 "검사를 못 함"이 구분되지 않는 초록 체크가 리뷰 도구에서 가장 위험하기 때문입니다.
 
 **② 컨벤션 학습 + 지적 (MVP 1·2단계)** — `pumpkins learn` → 리뷰에 자동 연결
 
-리포 스캔 → 식별자 명명 통계(기계적 추출 — LLM엔 통계 요약만 전달) → LLM 규칙 판정 → 임계선 게이트(20회+/85%+) → 사람이 검수·커밋하는 **`conventions.yml`** 생성.
+리포 스캔 → 식별자 명명 통계(기계적 추출 — LLM엔 통계 요약만 전달) → LLM 규칙 판정 → 임계선 게이트(20회+/85%+) → 사람이 검수·커밋하는 **`conventions/` 규칙 저장소** 생성.
 
-이후 리뷰(`pumpkins`) 실행 시 `<repo>/conventions.yml`이 있으면 diff를 규칙과 대조해 **질문형으로 지적**합니다 — *"`running` — 멤버 변수는 `m_` 접두사를 사용한다 관행과 다른 것 같아요. 여기만 다르게 한 이유가 있을까요?"* (근거 수치 + rename 제안 포함). 이 대조는 결정적이라 **API 키 없이도 동작**합니다.
+`learn`은 **필요할 때 한 번**(리포가 크게 바뀌면 다시), `review`는 **모든 PR에** 돌리는 구조입니다. 리뷰는 규칙 파일을 읽기만 하므로 규칙 생성 비용이 0입니다.
+
+이후 리뷰(`pumpkins`) 실행 시 `<repo>/conventions/`의 **활성 규칙**과 diff를 대조해 **질문형으로 지적**합니다 — *"`running` — 멤버 변수는 `m_` 접두사를 사용한다 관행과 다른 것 같아요. 여기만 다르게 한 이유가 있을까요?"* (근거 수치 + 적용 범위 + rename 제안 포함). 이 대조는 결정적이라 **API 키 없이도 동작**합니다.
+
+규칙마다 **적용 범위(`scope`)** 를 둘 수 있어서 레거시·생성 코드 트리는 자기 관행을 유지합니다 — 아래 [적용 범위 정하기](#적용-범위-정하기--폴더확장자별로-다른-규칙) 참고.
 
 ## 문서
 
@@ -58,10 +63,13 @@ git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ─�
 | `llm/provider.py` | LLM 프로바이더 어댑터 — `LLM_PROVIDER`(anthropic/openai)에 따라 구조화 출력 클라이언트 선택 |
 | `llm/postprocess.py` | LLM 구조화 출력으로 노이즈 필터 + 심각도 + 설명/수정안 + 추가 탐지 |
 | `report/markdown.py` | 마크다운 리포트 렌더링 |
+| `report/dump.py` | 실행 산출물 (`--out-dir`) — 리포트·원본 diff·LLM 프롬프트·실행 출처 |
 | `models.py` | 단계 간 데이터 계약 (`DiffScope`, `RawDiagnostic`, `Finding`, `ReviewResult`) |
-| `conventions/extractor.py` | (learn L1) 정규식 기반 식별자 추출 → 명명 통계 |
-| `conventions/learner.py` | (learn L2) LLM 규칙 판정 + 임계선 게이트 + `conventions.yml` 렌더 |
-| `conventions/checker.py` | (리뷰 3.5단계) diff를 `conventions.yml`과 결정적 대조 → 질문형 finding |
+| `conventions/extractor.py` | (learn L1) 정규식 기반 식별자 추출(멤버/상수/함수/클래스) → 명명 통계 |
+| `conventions/learner.py` | (learn L2) LLM 규칙 판정 + 임계선 게이트 — 무엇을 *제안*할지만 정함 |
+| `conventions/checker.py` | (리뷰 3.5단계) diff를 활성 규칙과 결정적 대조 → 질문형 finding |
+| `conventions/scope.py` | 규칙·스캔의 적용 범위 (경로 glob / 확장자 / 제외 경로) |
+| `conventions/store.py` | `conventions/` 규칙 저장소 — 상태(디렉터리), 승인 게이트, 재실행 병합 |
 
 ## 빠른 시작
 
@@ -166,22 +174,139 @@ pumpkins --repo /path/to/cpp/project --base main --out report.md
 
 # LLM 없이 clang-tidy 원본 결과만 (파이프라인 디버깅용)
 pumpkins --repo /path/to/cpp/project --no-llm -v
+
+# 리포트 + 디버깅 산출물을 현재 경로의 out/ 에 남김 (대상 레포로 이동할 필요 없음)
+pumpkins --repo /path/to/cpp/project --out-dir
+pumpkins --repo /path/to/cpp/project --out-dir 그밖의경로
 ```
+
+### `--out-dir` — 실행 산출물 한곳에 모아 보기
+
+```
+out/
+├── report.md          렌더된 리포트 (stdout과 동일)
+├── run.json           실행 출처: 프로바이더·모델·clang-tidy 버전·규칙 지문·커버리지
+├── diff.patch         수집된 diff 원본 (파이프라인이 실제로 본 것)
+├── diagnostics.json   clang-tidy 원본 진단 (triage 이전)
+├── findings.json      최종 finding, 구조화
+└── llm/
+    ├── request.txt    LLM에 보낸 프롬프트 전문
+    └── response.json  LLM이 돌려준 구조화 출력
+```
+
+`--out-dir`만 주면 `./out/`, 경로를 주면 그곳에 씁니다. 이전 실행의 산출물은 지우고 쓰므로 섞이지 않습니다.
+
+**`llm/request.txt`가 디버깅 가치가 가장 큽니다.** *"왜 이런 지적을 했지"* 또는 *"왜 아무 말도 안 하지"* 의 답이 대개 프롬프트에 그대로 적혀 있습니다 — 예를 들어 지금 시스템 프롬프트는 `You are a senior C++ reviewer specializing in concurrency bugs`로 시작하므로, 동시성 코드가 없는 PR에 아무 말도 안 하는 게 정상입니다.
+
+**`run.json`은 편의 기능이 아니라 제품 주장의 근거입니다.** "어떤 모델에서도 재현 가능하고 근거 있는 리뷰"라고 말하려면 무엇으로 돌렸는지가 결과와 함께 남아야 합니다 — 모델을 바꿨을 때 차이가 모델 때문인지 규칙 때문인지 도구 버전 때문인지 가려야 하기 때문입니다.
+
+```json
+{
+  "llm": { "used": true, "provider": "openai", "model": "gpt-4o" },
+  "clang_tidy_version": "14.0.0",
+  "conventions": { "active_rules": 2, "pending_candidates": 1,
+                   "rules_fingerprint": "sha256:50f64bfbd136b9a9" },
+  "coverage": { "analyzed_files": 1, "skipped_headers": ["include/fmt/format.h"],
+                "complete": false }
+}
+```
+
+`rules_fingerprint`는 활성 규칙의 내용 해시입니다(미승인 후보는 제외 — 적용되지 않으니 실행의 정체성에 들어가지 않습니다). git SHA와 달리 커밋 전에도 존재하고, 두 실행의 규칙이 같았는지를 바로 답합니다.
 
 컨벤션 학습 → 지적:
 
 ```bash
-# 1) 리포의 명명 관행을 학습해 conventions.yml 생성 (검수 후 커밋)
+# 1) 리포의 명명 관행을 학습 — 규칙 후보가 conventions/candidates/에 생깁니다
 pumpkins learn --repo /path/to/cpp/project
 
-# 2) 이후의 리뷰는 conventions.yml을 자동으로 대조 (API 키 없이도 이 단계는 동작)
+# 2) 검수하고 승인 (승인 전까지는 리뷰에 적용되지 않습니다)
+git mv conventions/candidates/function-casing-lowerCamel.yml conventions/rules/
+
+# 3) 이후의 리뷰는 conventions/rules/를 자동으로 대조 (API 키 없이도 동작)
 pumpkins --repo /path/to/cpp/project --no-llm
 
 # LLM 없이, LLM에 전달될 통계 원본만 출력 (learn 디버깅용)
 pumpkins learn --repo /path/to/cpp/project --no-llm
 ```
 
-컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/conventions.yml`), `--no-conventions`(대조 끄기).
+컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/conventions/`, 없으면 레거시 `conventions.yml`), `--no-conventions`(대조 끄기).
+
+### 규칙 저장소 — `conventions/`
+
+```
+conventions/
+├── config.yml       스캔 범위·임계선·통계 (규칙이 왜 이렇게 나왔는지의 근거)
+├── rules/           활성 — 리뷰가 적용하는 것은 여기뿐
+├── candidates/      판단 대기 — 리뷰에 영향 없음
+└── archive/         기각·은퇴 — learn이 다시 제안하지 않습니다
+```
+
+**규칙의 상태는 파일이 놓인 디렉터리입니다.** 파일 안에 `status:` 필드를 두지 않았기 때문에 상태와 실제가 어긋날 수 없고, 상태 전이가 `git mv` 한 번이라 **누가 언제 승인했는지를 git이 자동으로 기록**합니다. 승인자 필드를 손으로 관리할 필요가 없습니다.
+
+**이력도 git이 관리합니다.** 규칙 하나가 파일 하나이므로:
+
+```bash
+git log --follow conventions/rules/member-prefix-m.yml   # 이 규칙의 전체 이력
+```
+
+파일 안에 `history:` 배열을 두는 건 작성자 신원도 서명도 없는 git 재구현이라 하지 않았습니다. 파일에는 git이 줄 수 없는 것 — **결정의 이유(`reason`)** — 만 남깁니다.
+
+### learn을 다시 돌리면
+
+**검수한 결정이 사라지지 않습니다.** learn은 기존 상태를 읽고 병합하며, 활성 규칙을 덮어쓰지 않습니다.
+
+| 상황 | 동작 |
+|---|---|
+| 새 규칙 후보 | `candidates/`에 씀 |
+| 활성 규칙과 동일 | 근거 수치만 갱신 — 결정과 `reason`은 보존 (리포가 커진 건 새 결정이 아님) |
+| `archive/`에 기각돼 있음 | **다시 제안하지 않음.** 요약에 한 줄만 (`--reconsider`로 재검토) |
+| 같은 category/facet인데 값이 달라짐 | 조용히 뒤집지 않고 **대체 제안**으로 — 무엇을 대체하는지 파일에 적힘 |
+| 활성인데 새 스캔이 뒷받침 못함 | **은퇴 후보**로 보고만 함. 자동 삭제 안 함 |
+
+기각을 기억하는 게 핵심입니다 — 기각은 "없음"이 아니라 **"안 하기로 한 결정"** 이고, 매번 같은 걸 다시 제안하면 사용자는 곧 전부 무시하게 됩니다.
+
+첫 실행을 그대로 받아들이겠다면 `--accept-all`로 `rules/`에 바로 쓸 수 있습니다.
+
+### 적용 범위 정하기 — 폴더·확장자별로 다른 규칙
+
+리포 하나에 관행이 하나인 경우는 드뭅니다. 레거시 트리, 코드 생성 산출물, 벤더링된 의존성은 규칙이 다른 게 정상입니다.
+그래서 **학습이 읽는 범위**와 **규칙이 판정하는 범위**가 같은 어휘를 씁니다.
+
+```bash
+# 특정 트리만 학습 → 나온 규칙에 그 범위가 scope로 자동 기록됨
+pumpkins learn --repo . --include 'src/core/**'
+
+# 생성 코드·벤더 트리 제외 (반복 지정 가능)
+pumpkins learn --repo . --exclude 'model/generated/**' --exclude 'src/legacy'
+
+# 테스트 디렉터리는 기본 제외 — 포함하려면 명시
+pumpkins learn --repo . --include-tests
+```
+
+> 테스트 디렉터리를 기본에서 뺀 이유는 실측입니다. fmt에 그냥 돌리면 번들된 `test/gtest/`(googletest)가 UpperCamel 식별자 2845건 중 2837건을 공급해서, 전부 snake_case인 리포가 63% UpperCamel로 보였습니다. `--include-tests`로 켜면 디렉터리별 식별자 수가 로그에 찍히니 이런 오염이 바로 보입니다.
+
+규칙 파일마다 `scope`가 붙고, 손으로 고칠 수 있습니다. 비어 있으면 리포 전체 적용입니다.
+
+```yaml
+# conventions/rules/member-prefix-m.yml
+id: member-prefix-m
+category: member_variable
+description: "멤버 변수는 `m` 접두사를 사용한다"
+facet: prefix
+value: m
+coverage: 0.98
+occurrences: 1842
+confidence: high
+scope:
+  paths: []                        # 비면 전체
+  exclude_paths: ["src/legacy"]    # 여기선 이 규칙을 묻지 않음
+  extensions: [".hpp", ".h"]       # 헤더에만 적용
+reason: "2026-07 팀 논의에서 승인 — 신규 코드에만 적용"
+```
+
+- `exclude_paths`가 `paths`를 이깁니다 — "리포 전체, 단 이 레거시 폴더만 예외"가 제외 한 줄로 끝납니다.
+- 패턴은 리포 상대 경로에 **대소문자 구분**으로 매칭됩니다(같은 파일이 어느 OS에서도 같은 결과를 내도록). `*`는 디렉터리 경계를 넘고, 디렉터리를 가리키는 패턴은 그 아래 전체를 덮습니다.
+- 지적 코멘트에 적용 범위가 함께 표시돼서, 읽는 사람이 "이 규칙이 여기 적용되는 게 맞나"를 판단할 수 있습니다.
 
 주요 옵션: `--profile concurrency`(체크 프로파일 — 현재는 동시성만, 앞으로 컨벤션 등 추가 예정), `--model`(프로바이더별 기본값 오버라이드), `-v`(디버그 로그).
 
@@ -195,14 +320,24 @@ pytest
 
 ## 알려진 한계 (프로토타입)
 
-- 얕은 모드에서는 헤더 단독 분석 불가(TU만 분석), 컴파일 에러성 진단은 버림.
+실제 리포 두 곳(사내 C++ 프로젝트, [fmt PR #4865](https://github.com/fmtlib/fmt/pull/4865))에 돌려 확인한 것들입니다. 리포트가 이제 이 공백을 **숨기지 않고 표시**하지만, 없어진 건 아닙니다.
+
+- **헤더 온리 프로젝트에서 clang-tidy 축이 사실상 무용.** 얕은 모드는 헤더를 단독 분석할 수 없어 TU만 봅니다. 구현이 헤더에 인라인된 프로젝트(헤더가 소스보다 네 배 이상 많은 리포를 측정했습니다)에서는 이 축이 항상 0건입니다. `compile_commands.json`을 만들어 주는 것이 유일한 해법 — 리포트가 이 안내를 출력합니다.
+- **비C++ 동반 파일은 안 읽습니다.** 확장자 필터를 통과하지 못한 변경(예: 테스트케이스·스펙 파일)은 어떤 단계도 보지 않습니다. 동작 변경과 스펙·테스트가 한 커밋에 오는 리포에서는 리뷰 가치의 절반이 여기 있습니다.
+- **체크 프로파일이 `concurrency` 하나뿐.** LLM 프롬프트도 동시성 안티패턴만 찾도록 고정돼 있어서, 그 밖의 결함(표준·이식성 위반, 미사용 파라미터, 형제 파일 비대칭 등)은 원리적으로 나오지 않습니다. fmt PR 리뷰에서 LLM 출력이 11토큰이었던 이유가 이것입니다 — 모델은 지시대로 행동했습니다.
+- **컨벤션 축은 네이밍만 커버.** 구조적 관행(계층 방향, 소유권, 에러 처리)은 `facet: other`로 기록만 되고 기계 대조되지 않습니다. 정규식 추출로는 닿지 않는 영역이라 tree-sitter/AST가 전제 조건입니다.
+- 코드 생성 산출물이 통계를 오염시킬 수 있습니다(플레이스홀더 이름 등) — `--exclude`로 빼세요. 다만 실패 방향은 안전한 쪽입니다: 규칙이 **기각**되어 침묵할 뿐, 틀린 규칙이 채택되지는 않습니다.
 - clang-tidy 텍스트 출력 파싱 — `--export-fixes` YAML 전환 예정.
 - LLM 호출은 diff 전체를 한 번에 전달 — 대형 diff는 아직 청킹 안 함.
 
 ## 다음 단계
 
-1. **컨벤션 지적을 리뷰에 연결 (핵심 차별화).** 학습(`pumpkins learn` — ✅ 구현됨)으로 만든 `conventions.yml`을 리뷰 파이프라인에 물려, diff가 관행을 어기면 질문형으로 지적. 구현 방향은 [docs/convention-detection-design.md](docs/convention-detection-design.md)에 확정.
-2. **규칙 프로파일에 컨벤션/스타일 카테고리 추가** — 현재 `concurrency`뿐인 `CHECK_PROFILES`를 규칙 종류별로 확장.
-3. **검증** — 실제 리뷰 코멘트·컨벤션 위반이 남아있는 PR을 샘플로, 사람이 짚었던 걸 도구가 얼마나 재현하는지(recall/precision) 측정.
-4. 대형 diff 청킹 및 파일별 LLM 호출 병렬화.
-5. 결과가 유의미하면 그때 GitHub PR 연동(App/Action) 검토 — "사람 대신 코멘트를 다는" 형태.
+실제 리포 두 곳에 돌려본 결과가 정한 순서입니다 — 근거는 [설계 문서 §5.5·§6](docs/convention-detection-design.md).
+
+1. **체크 프로파일 확장** — 현재 `concurrency` 하나뿐이고 [LLM 프롬프트](src/pumpkins/llm/postprocess.py)도 동시성 고정입니다. fmt PR에서 LLM 출력이 11토큰이었던 이유이고, 정작 그 PR의 실제 결함(C++11 리포에 C++17 `inline` 변수 → CI 파괴)은 어떤 프로파일에도 속하지 않습니다. 프로파일별 프롬프트 조각 분리가 선행 작업입니다.
+2. **규칙을 LLM 리뷰에 주입** — 지금 규칙은 결정적 체커까지만 가고 LLM은 규칙을 못 봅니다. 그래서 `facet: other` 규칙이 파일에 기록만 되고 검사되지 않습니다(설계 문서의 방안 B). 결정적 경로는 그대로 두고 LLM 경로를 병행하되, **재현 가능 여부를 finding마다 표시**하는 것이 조건입니다.
+3. **헤더 분석** — 임시 TU로 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.
+4. **비C++ 동반 파일** — 동작 변경과 스펙/테스트케이스가 한 커밋에 오는 리포에서는 *"동작이 바뀌었는데 스펙/테스트 파일이 안 바뀌었다"* 가 높은 가치의 지적입니다.
+5. **구조 규칙** — 계층 방향·소유권 같은 관행은 정규식으로 닿지 않습니다. tree-sitter/AST가 전제.
+6. **검증 확장** — 스타일 가이드가 공개된 리포(fmt = snake_case, googletest = Google 스타일)로 `learn` 결과를 채점. 사람 판단 없이 채점 가능한 유일한 축입니다.
+7. 대형 diff 청킹, 결과가 유의미하면 GitHub PR 연동(App/Action).

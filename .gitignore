@@ -217,7 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Output report directory
-report/
+# Generated review output. Anchored with a leading slash: an unanchored `report/`
+# also matches src/pumpkins/report/, which silently hid new source files there.
+/report/
+/out/
 # Verification scorecards (generated run artifacts)
 verification/results/

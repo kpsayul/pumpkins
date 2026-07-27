@@ -87,7 +87,15 @@ MIN_RULE_CONSISTENCY = 0.85
 
 # Where `pumpkins learn` writes its human-reviewable artifact, relative to the
 # target repo root — meant to be committed alongside the code (§3-(1)).
+# A directory, one file per rule, with the rule's status expressed by which
+# subdirectory it sits in (conventions/store.py explains why).
+CONVENTIONS_DIRNAME = "conventions"
+# Pre-directory layout. Still *read* so existing repos keep working; never written.
 CONVENTIONS_FILENAME = "conventions.yml"
+
+# A rule's status IS the subdirectory it lives in, so the two can never drift
+# and `git mv` records who changed it. Only `rules/` is enforced by a review.
+RULE_STATUS_DIRS = {"active": "rules", "candidate": "candidates", "archived": "archive"}
 
 # Directories never scanned for conventions (vendored/generated code has
 # someone else's conventions).
@@ -95,6 +103,14 @@ LEARN_SKIP_DIRS = {
     ".git", "build", "out", "cmake-build-debug", "cmake-build-release",
     "third_party", "3rdparty", "external", "vendor", "deps", "node_modules", ".venv",
 }
+
+# Test directories, skipped by default and re-enabled with `learn --include-tests`.
+# Two reasons, both measured: test scaffolding follows looser naming than the
+# library it exercises, and vendored test frameworks hide here under names the
+# list above doesn't catch — in fmt, `test/gtest/` (bundled googletest) supplied
+# 2837 of the 2845 UpperCamel function/class names and made a uniformly
+# snake_case codebase look 63% UpperCamel.
+LEARN_TEST_DIRS = {"test", "tests", "testing", "unittest", "unittests"}
 
 
 def setup_logging(verbose: bool = False) -> None:

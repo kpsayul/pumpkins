@@ -82,21 +82,32 @@ class LlmPostProcessor:
     def __init__(self, model: str | None = None):
         self.model = model or default_review_model()
         self.client = get_client()  # provider from LLM_PROVIDER; key from env
+        # Kept for `--out-dir`: "왜 이런 지적을 했지" 또는 "왜 아무 말도 안 하지"의
+        # 답은 대개 프롬프트에 그대로 적혀 있다.
+        self.last_request: str | None = None
+        self.last_response: dict | None = None
 
     def process(
         self, scope: DiffScope, diagnostics: list[RawDiagnostic], shallow_mode: bool
     ) -> tuple[list[Finding], int]:
         """Returns (findings, dropped_as_noise_count)."""
+        user_prompt = self._build_prompt(scope, diagnostics, shallow_mode)
+        self.last_request = (
+            f"=== model ===\n{self.model}\n\n"
+            f"=== system ===\n{_SYSTEM_PROMPT}\n"
+            f"=== user ===\n{user_prompt}\n"
+        )
         result = self.client.parse(
             model=self.model,
             max_tokens=16000,
             system=_SYSTEM_PROMPT,
-            user=self._build_prompt(scope, diagnostics, shallow_mode),
+            user=user_prompt,
             schema=_LlmReview,
         )
         review = result.parsed
         if review is None:
             raise RuntimeError("LLM returned no parseable review output")
+        self.last_response = review.model_dump()
         log.info(
             "LLM triage: %d/%d diagnostics kept, %d extra finding(s); tokens in=%d out=%d",
             sum(v.keep for v in review.verdicts),

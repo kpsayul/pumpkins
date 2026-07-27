@@ -44,6 +44,12 @@ class ClangTidyRunner:
         self.binary = binary
         self.compile_db_dir = self._find_compile_db()
         self.shallow_mode = self.compile_db_dir is None
+        # Headers this run could not analyze; surfaced in the report so a clean
+        # result is never mistaken for full coverage. Header-only projects lose
+        # their whole implementation here — that is the point of reporting it.
+        self.skipped_headers: list[str] = []
+        self.analyzed_files = 0
+        self._version: str | None = None
 
         if shutil.which(binary) is None:
             raise RuntimeError(f"{binary!r} not found on PATH — install clang-tidy first")
@@ -54,16 +60,42 @@ class ClangTidyRunner:
 
     # ------------------------------------------------------------------ API
 
+    @property
+    def tool_version(self) -> str | None:
+        """clang-tidy's own version — part of a run's provenance, since the same
+        rules with a different analyzer are a different result."""
+        if self._version is None:
+            proc = subprocess.run(
+                [self.binary, "--version"], capture_output=True, text=True
+            )
+            match = re.search(r"version\s+(\S+)", proc.stdout)
+            self._version = match.group(1) if match else "unknown"
+        return self._version
+
     def run(self, scope: DiffScope) -> list[RawDiagnostic]:
         """Analyze every changed file in scope; return diagnostics that fall
         inside the changed ranges (clang-tidy enforces this via --line-filter)."""
         diagnostics: list[RawDiagnostic] = []
+        self.skipped_headers = []
+        analyzed = 0
         for file_diff in scope.files:
             if self.shallow_mode and Path(file_diff.path).suffix.lower() not in _TU_EXTENSIONS:
                 log.debug("skipping header in shallow mode: %s", file_diff.path)
+                self.skipped_headers.append(file_diff.path)
                 continue
             diagnostics.extend(self._run_one(file_diff))
-        log.info("clang-tidy produced %d diagnostic(s) in changed ranges", len(diagnostics))
+            analyzed += 1
+        if self.skipped_headers:
+            log.warning(
+                "%d of %d changed C++ file(s) not statically analyzed — headers "
+                "need a compile_commands.json; generate one for full coverage",
+                len(self.skipped_headers), len(scope.files),
+            )
+        log.info(
+            "clang-tidy analyzed %d file(s), produced %d diagnostic(s) in changed ranges",
+            analyzed, len(diagnostics),
+        )
+        self.analyzed_files = analyzed
         return diagnostics
 
     # ------------------------------------------------------------- internals

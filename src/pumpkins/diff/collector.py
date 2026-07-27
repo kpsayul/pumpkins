@@ -36,26 +36,36 @@ def collect_diff(repo: Path, base: str | None = None) -> DiffScope:
     if proc.returncode != 0:
         raise RuntimeError(f"git diff failed: {proc.stderr.strip()}")
 
-    scope = DiffScope(base_ref=base, files=parse_diff_text(proc.stdout))
+    files, skipped = parse_diff_text(proc.stdout)
+    scope = DiffScope(base_ref=base, files=files, skipped_files=skipped)
     log.info(
-        "diff: %d changed C++ file(s), %d changed range(s)",
+        "diff: %d changed C++ file(s), %d changed range(s)%s",
         len(scope.files),
         sum(len(f.added_ranges) for f in scope.files),
+        f", {len(skipped)} non-C++ file(s) skipped" if skipped else "",
     )
+    for path in skipped:
+        log.debug("skipping non-C++ changed file: %s", path)
     return scope
 
 
-def parse_diff_text(diff_text: str) -> list[FileDiff]:
-    """Parse unified diff text into per-file added-line ranges (C++ files only)."""
+def parse_diff_text(diff_text: str) -> tuple[list[FileDiff], list[str]]:
+    """Parse unified diff text into per-file added-line ranges.
+
+    Returns (C++ files, paths skipped for not being C++). The second element is
+    what lets the report distinguish "found nothing" from "never looked".
+    """
     if not diff_text.strip():
-        return []
+        return [], []
 
     files: list[FileDiff] = []
+    skipped: list[str] = []
     for patched_file in PatchSet(diff_text):
         if patched_file.is_removed_file:
             continue
         path = patched_file.path  # new-side path
         if Path(path).suffix.lower() not in CPP_EXTENSIONS:
+            skipped.append(path)
             continue
 
         added_lines: list[int] = []
@@ -74,7 +84,7 @@ def parse_diff_text(diff_text: str) -> list[FileDiff]:
                 patch_text=str(patched_file),
             )
         )
-    return files
+    return files, skipped
 
 
 def _merge_into_ranges(lines: list[int], gap: int = 3) -> list[LineRange]:

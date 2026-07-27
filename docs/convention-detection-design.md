@@ -25,8 +25,8 @@
 리뷰 시점이 아니라 **미리** 리포 전체를 훑어 규칙을 뽑아둔다.
 
 ```
-[1회성/주기적]  리포 스캔 → LLM이 관행 추출 → conventions.yml 생성
-[리뷰 시마다]   diff + conventions.yml → 위반 판정
+[1회성/주기적]  리포 스캔 → LLM이 관행 추출 → conventions/ 규칙 저장소 생성
+[리뷰 시마다]   diff + conventions/rules/ → 위반 판정
 ```
 
 - 추출 예: "멤버 변수 187개 중 172개(92%)가 `m_` 접두사 → 규칙 채택", "함수명 94%가 lowerCamelCase"
@@ -52,7 +52,7 @@ GitHub API로 과거 리뷰 코멘트를 수집해 "이 팀 리뷰어들이 실�
 
 ### 채택한 조합
 
-**A를 본체로, B를 보조로.** A가 만든 `conventions.yml`을 근거로 지적하되,
+**A를 본체로, B를 보조로.** A가 만든 `conventions/`의 규칙을 근거로 지적하되,
 프로파일에 없는 새 패턴은 B 방식으로 diff 문맥에서 잡아 **"규칙 후보"로 프로파일에 역제안**.
 C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 
@@ -60,10 +60,13 @@ C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 
 ### (1) 규칙은 눈에 보이는 산출물로
 
-`conventions.yml`(또는 마크다운)이 **리포에 커밋되는 구조**로 간다.
+`conventions/` 디렉터리가 **리포에 커밋되는 구조**로 간다 (규칙당 파일 하나).
 
 - 사용자가 규칙을 승인/수정/삭제 가능 → 오탐이 나도 "규칙을 고치면 되는" 경험.
 - 블랙박스 지적은 사용자가 금방 꺼버린다. 근거를 보여주는 것이 생존 조건.
+- **승인이 실제 게이트다.** `candidates/`의 규칙은 리뷰에 적용되지 않고, `rules/`로 옮겨야 발효된다. 상태는 파일이 놓인 디렉터리이므로 `git mv`가 곧 결정이고, git이 승인자와 시각을 기록한다.
+- **재실행이 결정을 파괴하지 않는다.** 초기 구현은 파일을 통째로 덮어써서 "검수하면 검수한 만큼 손해"였다 — 지운 규칙이 다음 learn에서 되살아났다. 이제 `store.reconcile`이 기존 결정과 병합하고, 기각된 규칙은 다시 제안하지 않는다. **기각은 "없음"이 아니라 결정이다.**
+- 이력은 git에 맡긴다(`git log --follow`). 파일 안에 history 배열을 두면 작성자 신원도 서명도 없는 git 재구현이 된다 — 파일에는 git이 줄 수 없는 결정의 *이유*만 남긴다.
 
 ### (2) 신뢰도 임계선 — "관행"의 수치적 정의
 
@@ -71,6 +74,11 @@ C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 - 리포가 절반 `m_`, 절반 `_` 접미사면 그건 규칙이 아니라 혼재 상태 → 지적하지 않는다.
   (대신 "통일 제안"이라는 **별개 카테고리**로 다룰 수 있음.)
 - **디렉터리 단위로 프로파일 분리** — 레거시/서드파티 폴더는 규칙이 다른 게 정상.
+  ✅ 구현: [conventions/scope.py](../src/pumpkins/conventions/scope.py). 규칙마다 `scope`(paths / exclude_paths / extensions)를 갖고,
+  `learn --include`로 좁혀 학습하면 그 범위가 규칙에 자동 전파된다 — 측정한 코드 밖에서 규칙을 신뢰할 근거가 없으므로.
+
+> **임계선은 분모가 맞을 때만 작동한다.** 실측에서 드러난 함정: 분모가 틀리면 임계선은
+> 진짜 규칙을 죽이거나(fmt) 정반대 규칙을 통과시킨다(비공개 리포). 상세는 아래 §5.5.
 
 ### (3) 지적의 말투 — 질문형
 
@@ -87,7 +95,7 @@ C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 
 | 단계 | 모델 | 근거 |
 |---|---|---|
-| **`pumpkins learn`** (컨벤션 추출) | `claude-sonnet-5` | 설계상(방안 A) 식별자 추출은 기계적으로 하고 LLM엔 **통계 요약만** 줘서 규칙 여부를 판정시킨다 — 구조화 입력→구조화 출력의 패턴 분류라 Opus급 지능 불필요. 리포당 1회성이고 결과가 `conventions.yml`로 남아 사람이 검수 가능. **Batch API(50% 할인)** 는 learn이 서버측/스케줄 실행으로 옮겨질 때 적용 — 현재 CLI는 사용자가 터미널에서 기다리므로 동기 호출 |
+| **`pumpkins learn`** (컨벤션 추출) | `claude-sonnet-5` | 설계상(방안 A) 식별자 추출은 기계적으로 하고 LLM엔 **통계 요약만** 줘서 규칙 여부를 판정시킨다 — 구조화 입력→구조화 출력의 패턴 분류라 Opus급 지능 불필요. 리포당 1회성이고 결과가 `conventions/`에 규칙당 파일로 남아 사람이 검수 가능. **Batch API(50% 할인)** 는 learn이 서버측/스케줄 실행으로 옮겨질 때 적용 — 현재 CLI는 사용자가 터미널에서 기다리므로 동기 호출 |
 | **`pumpkins review`** (diff 리뷰/triage) | `claude-opus-4-8` (현행 유지) | 노이즈 필터·심각도 판정·diff에서 미묘한 패턴 직접 탐지 — 애매한 문맥 추론이 핵심이고, **precision = 생존**인 단계라 지능이 돈값을 함. diff는 보통 작아 호출당 비용 부담 낮음 |
 | (실험) learn 다운그레이드 | `claude-haiku-4-5` | learn 프롬프트가 안정되면 Haiku까지 내려 품질 비교 — Opus 대비 1/5 가격 |
 
@@ -95,10 +103,31 @@ C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 Fable 5($10/$50)는 최고난도 자율 에이전트용 — 이 파이프라인 런타임엔 과함.
 
 > **사전 추정일 뿐 — 검증으로 확정한다.** [verification-plan](verification-plan.md)에 모델 비교 항목 포함:
-> 같은 리포에서 learn을 Sonnet/Haiku/Opus로 각각 돌려 `conventions.yml` 품질(추출 규칙의 정확도)을 비교해
+> 같은 리포에서 learn을 Sonnet/Haiku/Opus로 각각 돌려 추출 규칙의 정확도를 비교해
 > 감이 아니라 데이터로 최종 결정.
 
 구현 반영: `config.py`에 단계별 기본 모델 상수(`DEFAULT_REVIEW_MODEL`, `DEFAULT_LEARN_MODEL`)로 분리.
+
+## 5.5 실측 기록 — 실제 리포에서 통계가 틀렸던 방식
+
+2026-07-27, 비공개 C++ 리포 한 곳과 [fmt PR #4865](https://github.com/fmtlib/fmt/pull/4865)에 실제로 돌려 발견한 것들.
+**픽스처 검증이 recall/precision 100%였는데도 두 리포 모두에서 규칙이 틀렸다** — 통제 환경 검증만으로는
+부족하다는 것이 이 절의 첫 교훈이다.
+
+| 증상 | 원인 | 수정 | 검증 |
+|---|---|---|---|
+| fmt: 멤버가 전부 snake_case인데 casing 규칙이 **기각** | 소문자 한 단어(`dump`)를 `single_lower`라는 독립 스타일로 셈 → 하나의 관행이 66%/33%로 쪼개짐 | casing에 별도 분모(`casing_informative`)를 두고 모호한 이름을 제외. 대조 시에도 관용 비교(`casing_matches`) | 33% → **100%**, 채택 |
+| 비공개 리포: *"멤버는 접두사를 쓰지 않는다"* 가 **채택** (정반대) | `m_`만 접두사로 알아서 `mFoo` 스타일 멤버가 전부 "(none)"으로 집계(91%). 이 규칙은 그 리포의 `kFoo` 상수 수백 개를 모두 위반으로 지적하는 오탐 생성기였음 | `m[A-Z]`/`k`/`s`/`g` 인식 추가 | `m` **98%**, 올바른 규칙 채택 |
+| 비공개 리포: 멤버 접두사 분포 오염 | `static constexpr` 상수가 멤버 카테고리에 섞임 | `constant` 카테고리 분리 (`const T&` 멤버는 제외) | 상수 `k` **100%** 별도 규칙 |
+| fmt: 타입의 41%, 함수의 46%가 UpperCamel로 보임 | ① `template <class Char>`의 파라미터가 클래스로, 매크로가 함수로 집계 ② **번들된 `test/gtest/`** 가 UpperCamel 2845건 중 2837건 공급 | ① 전처리기 줄·템플릿 절·ALL_CAPS 배제 ② 테스트 디렉터리 기본 제외(`--include-tests`로 해제) + 디렉터리별 식별자 수 로그 | 함수·클래스 **lower_snake 100%**, 채택 |
+
+핵심 교훈 셋:
+
+1. **분모가 규칙보다 먼저다.** 임계선 게이트는 훌륭한 안전장치지만, 잘못된 분모 위에서는 안전하지 않다.
+2. **오염원은 디렉터리 단위로 온다.** 그래서 스캔 범위 제어가 부가 기능이 아니라 정확도의 전제다.
+   벤더 트리는 이름을 예측할 수 없으므로(`test/gtest`), 디렉터리별 기여도를 **로그로 보여주는 것**이 실질적 방어였다.
+3. **실패 방향을 안전한 쪽으로 고정하라.** 남은 오염(코드 생성 플레이스홀더)은 규칙을 *기각*시켜 침묵하게 만든다.
+   틀린 규칙이 채택되는 것보다 낫다 — precision이 생존이라는 §5의 원칙과 같은 방향.
 
 ## 5. 리스크
 
@@ -110,25 +139,37 @@ Fable 5($10/$50)는 최고난도 자율 에이전트용 — 이 파이프라인 
 
 ## 6. MVP 경로 (구현 순서)
 
-1. ✅ **`pumpkins learn` (구현됨)** — 리포 스캔 → 식별자 통계(기계적 추출) → LLM 판정 → `conventions.yml` 생성.
+1. ✅ **`pumpkins learn` (구현됨)** — 리포 스캔 → 식별자 통계(기계적 추출) → LLM 판정 → `conventions/` 규칙 저장소 생성.
    *이것 하나만으로 데모가 된다* — "너희 리포 규칙이 이거야"를 보여주는 것 자체가 와우 포인트.
    - 구현: [conventions/extractor.py](../src/pumpkins/conventions/extractor.py)(L1: 정규식 기반 추출·통계 — tree-sitter는 업그레이드 경로),
-     [conventions/learner.py](../src/pumpkins/conventions/learner.py)(L2: LLM 판정 + **코드 측 임계선 게이트** + yml 렌더)
+     [conventions/learner.py](../src/pumpkins/conventions/learner.py)(L2: LLM 판정 + **코드 측 임계선 게이트**),
+     [conventions/store.py](../src/pumpkins/conventions/store.py)(L3: 기존 결정과 병합 + 규칙당 파일 기록)
    - `--no-llm`으로 LLM에 전달될 통계 원본을 그대로 볼 수 있음 (파이프라인 디버깅)
 2. ✅ **리뷰 파이프라인에 convention 대조 연결 (구현됨)** — diff의 추가 라인에서 선언된 식별자를
-   `conventions.yml`의 규칙(facet/value)과 대조해 질문형 finding 출력.
+   `conventions/rules/`의 활성 규칙(facet/value)과 대조해 질문형 finding 출력.
    - 구현: [conventions/checker.py](../src/pumpkins/conventions/checker.py) — **결정적 대조라 API 키 없이도 동작** (CI-safe).
-     리뷰 실행 시 `<repo>/conventions.yml`이 있으면 자동 적용 (`--conventions PATH` / `--no-conventions`)
+     리뷰 실행 시 `<repo>/conventions/`(또는 레거시 `conventions.yml`)이 있으면 자동 적용 (`--conventions PATH` / `--no-conventions`)
    - 규칙에 기계 대조용 `facet`(prefix/suffix/casing) + `value` 필드 추가 — learn의 통계 키와 같은 어휘 사용
    - 질문형 + 근거 제시: *"member_variable 187개 중 92%가 이 관행을 따릅니다 … 여기만 다르게 한 이유가 있을까요?"*
+   - **규칙 scope (구현됨)** — `paths`/`exclude_paths`/`extensions`로 파일별 적용 범위 제한. §3-(2)의 "디렉터리 단위 분리" 결정이 여기서 실체화됨
+   - **규칙 저장소 + 승인 워크플로 (구현됨)** — `conventions/{rules,candidates,archive}/`. 상태=디렉터리, 이력=git, 재실행 시 결정 보존([store.py](../src/pumpkins/conventions/store.py))
    - 남은 것(후속): `facet: other` 규칙의 LLM 문맥 보조(방안 B), casing 자동 rename 제안, `confidence` 기반 톤 전환
 3. 🟡 **자기 검증 (하네스 구축됨 — 키 필요 단계는 스켈레톤 대기)** —
    [verification/run_verification.py](../verification/run_verification.py)가 전체 flow를 실행:
    - ✅ 주입 검증(Track A, 키 불필요): 통제 fixture에 위반 5건+무해 3건 주입 → recall/precision 채점 → `verification/results/` 채점표. 현재 **recall 100% / precision 100%**
    - ✅ CLI 스모크: `--no-llm` 전체 파이프라인 리포트 확인
+   - ✅ **scope 격리 검증**: `legacy/`에 같은 위반을 심고 `exclude_paths`로 제외 → legacy는 침묵하고 src의 5건은 유지되는지. 뒤쪽 조건이 없으면 scope는 그냥 체커를 끄는 스위치일 뿐이라 둘 다 확인함
+   - ✅ **저장소 포맷 등가성**: 레거시 `conventions.yml`과 `conventions/` 저장소가 같은 지적을 내는지 + `candidates/`가 리뷰에 적용되지 않는지. 픽스처를 일부러 레거시로 남겨 뒀으므로 [1]~[3]이 옛 경로를, [4]가 신규 경로를 덮는다
    - ⏭️ learn 품질 / 모델 비교(§4 확정용) / 리뷰 LLM e2e: **키 필요 — 자동 skip되는 스켈레톤**, 키 확보 후 각 함수 내부만 채우면 됨 (해야 할 일이 docstring에 명시돼 있음)
-   - 남은 것: 실제 오픈소스 리포(컨벤션 뚜렷한 곳)로 주입 검증 확장
+   - **한계 (§5.5가 증명함): 픽스처 100%는 제품 품질을 보장하지 않는다.** 실제 리포 두 곳에서 규칙이 틀렸는데도 이 하네스는 만점이었다. 다음 우선순위는 오픈소스 리포를 하네스에 넣어 **정답이 공개된 스타일 가이드**(fmt=snake_case, googletest=Google style)와 학습 결과를 비교하는 것
 4. 통과하면 GitHub PR 코멘트 봇 + 방안 C(리뷰 이력 마이닝) 검토.
+
+### 다음에 할 일 (실측이 가리키는 순서)
+
+1. **프로파일 확장** — 현재 `concurrency` 하나뿐이고 LLM 프롬프트도 동시성 고정이라, 리뷰어가 실제로 짚는 것 대부분이 원리적으로 안 나온다. fmt PR에서 LLM 출력이 11토큰이었던 이유(모델은 지시를 정확히 따랐다). 최소한 "표준/이식성"과 "컨벤션" 축이 필요 — 실제로 그 PR의 결함은 C++11 리포에 C++17 `inline` 변수를 넣어 CI를 깨뜨리는 것이었다.
+2. **헤더 분석** — 임시 TU를 만들어 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.
+3. **비C++ 동반 파일** — 동작 변경과 스펙/테스트케이스가 한 커밋에 오는 리포에서는 "동작이 바뀌었는데 스펙/테스트 파일이 안 바뀌었다"가 높은 가치의 지적이다.
+4. **구조 규칙** — 계층 방향·소유권 같은 관행은 정규식으로 닿지 않는다. tree-sitter/AST가 전제.
 
 ## 요약
 

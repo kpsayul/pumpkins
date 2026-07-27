@@ -1,4 +1,4 @@
-"""Convention learning, stage L2 — LLM judgment + threshold gate + YAML render.
+"""Convention learning, stage L2 — LLM judgment + threshold gate.
 
 Receives the naming statistics from stage L1 (extractor.py) and asks the LLM to
 judge which patterns are actual *rules* of the project. The LLM's job here is
@@ -10,8 +10,9 @@ Two safeguards from the design doc:
 - threshold gate (§3-(2)) is enforced *in code*, not just in the prompt — a
   rule below MIN_RULE_OCCURRENCES / MIN_RULE_CONSISTENCY is demoted to a
   rejected candidate no matter what the LLM says.
-- the output is a human-reviewable conventions.yml (§3-(1)) meant to be
-  committed to the target repo; people can edit or delete rules.
+- the output is human-reviewable and committed to the target repo (§3-(1));
+  people can edit, approve or reject rules. Persistence and the approval
+  workflow live in store.py — this module only decides what to *propose*.
 
 The provider (Claude / GPT) is selected by LLM_PROVIDER via llm/provider.py;
 each SDK reads its own API key from the environment.
@@ -20,8 +21,6 @@ each SDK reads its own API key from the environment.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal
 
 import yaml
@@ -33,6 +32,7 @@ from pumpkins.config import (
     default_learn_model,
 )
 from pumpkins.conventions.extractor import CategoryStats
+from pumpkins.conventions.scope import RuleScope
 from pumpkins.llm.provider import get_client
 
 log = logging.getLogger(__name__)
@@ -42,13 +42,21 @@ You are analyzing identifier-naming statistics extracted from a C++ repository
 to discover the project's *implicit* naming conventions — rules the team
 follows in code even though they may be written down nowhere.
 
-You receive, per identifier category (member_variable / function /
+You receive, per identifier category (member_variable / constant / function /
 class_type): a total count, distributions over prefixes, suffixes and casing
-styles, and a sample of raw names.
+styles, and a sample of raw names. `constant` covers compile-time constants
+(`static constexpr` / `static const`), which are counted apart from mutable
+members because projects usually name the two differently.
+
+Casing has a SMALLER denominator than prefix and suffix, stated explicitly in
+the input. Single-word lowercase names (`dump`, `value`) are excluded from it:
+they satisfy lowerCamel and lower_snake equally, so they carry no casing
+signal. When you report occurrences and coverage for a casing rule, use that
+casing denominator — never the category total.
 
 Adopt a pattern as a rule ONLY when the statistics clearly support it:
-- at least {min_occ} occurrences in the category, AND
-- the dominant pattern covers at least {min_cons:.0%} of the category.
+- at least {min_occ} occurrences in the relevant denominator, AND
+- the dominant pattern covers at least {min_cons:.0%} of it.
 A category split between two competing patterns is NOT a rule — reject it and
 say why. (Suggesting unification is a separate, out-of-scope feature.)
 
@@ -73,6 +81,9 @@ For every adopted rule provide:
 - a few examples (conforming names) and counter_examples (violations) drawn
   from the samples
 
+Leave `scope` empty — you are given statistics, not file paths, so you cannot
+know where a rule should be narrowed. The caller fills it in.
+
 Report rejected candidates briefly with a reason. Be conservative: every wrong
 rule becomes a false review comment later, and false comments are what make
 users turn the tool off.
@@ -80,11 +91,15 @@ users turn the tool off.
 
 
 class ConventionRule(BaseModel):
-    """One adopted naming rule — a row in conventions.yml.
+    """One adopted naming rule — persisted as one file under conventions/.
 
     facet/value make the rule machine-checkable: the review pipeline compares
     an identifier's split_pattern() facets against them deterministically
     (conventions/checker.py). facet="other" rules are human-readable only.
+
+    `scope` narrows where the rule is enforced. The LLM never fills it in — it
+    sees statistics, not paths — so it arrives either from the learn scan's own
+    scope or from a human editing the file.
     """
 
     id: str
@@ -97,6 +112,7 @@ class ConventionRule(BaseModel):
     confidence: Literal["high", "medium", "low"]
     examples: list[str] = Field(default_factory=list)
     counter_examples: list[str] = Field(default_factory=list)
+    scope: RuleScope = Field(default_factory=RuleScope)
 
 
 class RejectedCandidate(BaseModel):
@@ -143,7 +159,9 @@ class ConventionLearner:
         self.model = model or default_learn_model()
         self.client = get_client()  # provider from LLM_PROVIDER; key from env
 
-    def learn(self, stats: list[CategoryStats]) -> LearnResult:
+    def learn(
+        self, stats: list[CategoryStats], scan_scope: RuleScope | None = None
+    ) -> LearnResult:
         parsed = self.client.parse(
             model=self.model,
             max_tokens=8000,
@@ -163,6 +181,12 @@ class ConventionLearner:
             parsed.input_tokens,
             parsed.output_tokens,
         )
+        # Rules can only be trusted where they were measured: a scan narrowed to
+        # a subtree yields rules scoped to that subtree. Assigned in code, never
+        # taken from the model, for the same reason as the threshold gate.
+        scope = scan_scope or RuleScope()
+        for rule in result.rules:
+            rule.scope = scope.model_copy(deep=True)
         return apply_threshold_gate(result)
 
 
@@ -174,13 +198,17 @@ def _render_stats_text(stats: list[CategoryStats]) -> str:
         parts.append(f"### {s.category} (total {s.total})")
         parts.append(f"prefixes: {_fmt_counts(s.prefix_counts, s.total)}")
         parts.append(f"suffixes: {_fmt_counts(s.suffix_counts, s.total)}")
-        parts.append(f"casing:   {_fmt_counts(s.casing_counts, s.total)}")
+        parts.append(
+            f"casing (denominator {s.casing_informative}; "
+            f"{s.casing_ambiguous} single-word name(s) excluded as unsignalled): "
+            f"{_fmt_counts(s.casing_counts, s.casing_informative)}"
+        )
         parts.append(f"samples:  {', '.join(s.samples) or '(none)'}\n")
     return "\n".join(parts)
 
 
 def _fmt_counts(counts: dict[str, int], total: int) -> str:
-    if not counts:
+    if not counts or total <= 0:
         return "(none)"
     return ", ".join(
         f"{k}: {v} ({v / total:.0%})" for k, v in counts.items()
@@ -194,36 +222,3 @@ def render_stats_yaml(stats: list[CategoryStats]) -> str:
         allow_unicode=True,
         sort_keys=False,
     )
-
-
-def render_conventions_yaml(
-    repo: Path, model: str, stats: list[CategoryStats], result: LearnResult
-) -> str:
-    """Render the committable conventions.yml (design doc §3-(1))."""
-    header = (
-        "# generated by `pumpkins learn` — 이 파일이 리뷰 지적의 근거가 됩니다.\n"
-        "# 사람이 검수·수정해서 커밋하세요: 규칙을 고치면 지적이 바뀌고, 지우면 사라집니다.\n"
-    )
-    doc = {
-        "version": 1,
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "model": model,
-        "repo": str(repo),
-        "thresholds": {
-            "min_occurrences": MIN_RULE_OCCURRENCES,
-            "min_consistency": MIN_RULE_CONSISTENCY,
-        },
-        "rules": [r.model_dump() for r in result.rules],
-        "rejected_candidates": [r.model_dump() for r in result.rejected],
-        # raw distributions kept for transparency — "왜 이 규칙이야?"의 근거
-        "stats_summary": {
-            s.category: {
-                "total": s.total,
-                "prefixes": s.prefix_counts,
-                "suffixes": s.suffix_counts,
-                "casing": s.casing_counts,
-            }
-            for s in stats
-        },
-    }
-    return header + yaml.safe_dump(doc, allow_unicode=True, sort_keys=False)

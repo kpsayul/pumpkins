@@ -9,11 +9,17 @@
       → conventions.yml 대조 → 주입 정답지와 비교해 recall/precision 산출
   [2] CLI 스모크          (키 불필요 — 실제 실행; clang-tidy 없으면 skip)
       `pumpkins --no-llm` 전체 파이프라인이 리포트까지 뽑는지 확인
-  [3] learn 품질 검증     (키 필요 — 스켈레톤: fixture에 learn을 돌려 생성된
+  [3] scope 격리 검증     (키 불필요 — 실제 실행)
+      legacy/ 하위에 같은 위반을 심고 exclude_paths로 제외 → legacy는 침묵하고
+      src의 지적은 그대로 남는지 (규칙 scope의 계약)
+  [4] 저장소 포맷 등가성   (키 불필요 — 실제 실행)
+      레거시 conventions.yml과 conventions/ 저장소가 같은 지적을 내는지 +
+      미승인 후보(candidates/)가 리뷰에 적용되지 않는지
+  [5] learn 품질 검증     (키 필요 — 스켈레톤: fixture에 learn을 돌려 생성된
       conventions.yml을 정답지와 비교. 키 오면 여기만 채우면 됨)
-  [4] 모델 비교           (키 필요 — 스켈레톤: 같은 통계를 sonnet/haiku/opus로
+  [6] 모델 비교           (키 필요 — 스켈레톤: 같은 통계를 sonnet/haiku/opus로
       판정시켜 규칙 정확도 비교 → 설계 문서 §4 모델 전략 확정)
-  [5] 리뷰 LLM triage e2e (키 필요 — 스켈레톤)
+  [7] 리뷰 LLM triage e2e (키 필요 — 스켈레톤)
 
 사용:
     python verification/run_verification.py [--keep-workdir]
@@ -37,7 +43,13 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 
 from pumpkins.config import current_provider, has_api_key, required_key_env, setup_logging
-from pumpkins.conventions import check_scope, load_conventions
+from pumpkins.conventions import (
+    RuleScope,
+    StoredRule,
+    check_scope,
+    load_conventions,
+    write_rule,
+)
 from pumpkins.diff import collect_diff
 
 ROOT = Path(__file__).resolve().parent
@@ -208,14 +220,102 @@ def step_cli_smoke(workdir: Path) -> StepResult:
     )
     if proc.returncode != 0:
         return StepResult("[2] CLI 스모크", "fail", proc.stderr.strip()[-300:])
-    if "- conventions: 3 rule(s)" not in proc.stdout:
+    if "- conventions: 3 active rule(s)" not in proc.stdout:
         return StepResult("[2] CLI 스모크", "fail", "report missing conventions header")
     n = proc.stdout.count("convention:")
     return StepResult("[2] CLI 스모크", "pass", f"report OK, convention finding {n}건 포함")
 
 
+def step_scope_isolation(workdir: Path) -> StepResult:
+    """[3] 규칙 scope가 하위 트리를 실제로 비껴가는가 (키 불필요).
+
+    같은 위반(`m_` 누락)을 legacy/ 에 심고, 규칙에 exclude_paths=["legacy"]를
+    준 전후를 비교한다. 통과 조건은 둘 다여야 한다 — legacy는 침묵하고,
+    src의 기존 지적 5건은 그대로 남는 것. 뒤쪽이 없으면 scope는 그냥
+    체커를 끄는 스위치일 뿐이다.
+    """
+    legacy = workdir / "legacy"
+    legacy.mkdir(exist_ok=True)
+    (legacy / "legacy_pool.h").write_text(
+        "class LegacyPool {\npublic:\n    void oldStyle();\n\nprivate:\n"
+        "    int count;\n};\n",
+        encoding="utf-8",
+    )
+    if _run(["git", "add", "legacy"], workdir).returncode != 0:
+        return StepResult("[3] scope 격리 검증", "fail", "git add legacy 실패")
+
+    scope = collect_diff(workdir)
+    rules = load_conventions(workdir / "conventions.yml")
+
+    before = check_scope(scope, rules)
+    hit_legacy = [f for f in before if f.file.startswith("legacy/")]
+
+    for rule in rules:
+        rule.scope = RuleScope(exclude_paths=["legacy"])
+    after = check_scope(scope, rules)
+    still_legacy = [f for f in after if f.file.startswith("legacy/")]
+    still_src = [f for f in after if not f.file.startswith("legacy/")]
+
+    if not hit_legacy:
+        return StepResult(
+            "[3] scope 격리 검증", "fail",
+            "scope 없이도 legacy 위반을 못 잡음 — 검증이 성립하지 않음",
+        )
+    if still_legacy:
+        return StepResult(
+            "[3] scope 격리 검증", "fail",
+            f"exclude_paths 적용 후에도 legacy에서 {len(still_legacy)}건 지적",
+        )
+    if len(still_src) != len(before) - len(hit_legacy):
+        return StepResult(
+            "[3] scope 격리 검증", "fail",
+            f"scope가 범위 밖까지 껐음 — src 지적 {len(still_src)}건 "
+            f"(기대 {len(before) - len(hit_legacy)}건)",
+        )
+    return StepResult(
+        "[3] scope 격리 검증", "pass",
+        f"legacy {len(hit_legacy)}건 → 0건, src {len(still_src)}건 유지",
+    )
+
+
+def step_store_format_equivalence(workdir: Path) -> StepResult:
+    """[4] 레거시 conventions.yml과 conventions/ 저장소가 같은 결과를 내는가 (키 불필요).
+
+    픽스처는 의도적으로 레거시 단일 파일이라 그 경로는 [1]~[3]이 계속 검증한다.
+    여기서는 같은 규칙을 저장소 포맷으로 옮겨 CLI를 다시 돌려, 포맷 전환이
+    지적을 바꾸지 않는지 확인한다. 기존 리포를 깨지 않는다는 약속의 증거.
+    """
+    legacy = load_conventions(workdir / "conventions.yml")
+    root = workdir / "conventions"
+    for rule in legacy:
+        write_rule(root, "active", StoredRule(**rule.model_dump()))
+
+    scope = collect_diff(workdir)
+    from_legacy = check_scope(scope, legacy)
+    from_store = check_scope(scope, load_conventions(root))
+
+    key = lambda fs: sorted((f.file, f.line, f.check, f.title) for f in fs)  # noqa: E731
+    if key(from_legacy) != key(from_store):
+        return StepResult(
+            "[4] 저장소 포맷 등가성", "fail",
+            f"레거시 {len(from_legacy)}건 vs 저장소 {len(from_store)}건 — 지적이 달라짐",
+        )
+
+    # 승인 대기 후보는 적용되지 않아야 한다 (승인 게이트가 실제로 게이트인가)
+    write_rule(root, "candidate", StoredRule(**legacy[0].model_dump(), reason="검증용 후보"))
+    if len(check_scope(scope, load_conventions(root))) != len(from_store):
+        return StepResult(
+            "[4] 저장소 포맷 등가성", "fail", "candidates/의 규칙이 리뷰에 적용됨",
+        )
+    shutil.rmtree(root, ignore_errors=True)
+    return StepResult(
+        "[4] 저장소 포맷 등가성", "pass",
+        f"두 포맷 모두 {len(from_store)}건 동일, 미승인 후보는 미적용",
+    )
+
+
 def step_learn_quality(workdir: Path) -> StepResult:
-    """[3] (키 필요 — 스켈레톤) learn 품질: fixture에 `pumpkins learn`을 돌려
+    """[5] (키 필요 — 스켈레톤) learn 품질: fixture에 `pumpkins learn`을 돌려
     생성된 conventions.yml을 정답지(fixture/conventions.yml)와 비교.
 
     키가 오면 채울 내용:
@@ -224,12 +324,12 @@ def step_learn_quality(workdir: Path) -> StepResult:
       3. 규칙 recall/precision을 채점표에 기록
     """
     if not HAS_KEY:
-        return StepResult("[3] learn 품질 검증", "skipped", f"{KEY_ENV} 없음")
-    return StepResult("[3] learn 품질 검증", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
+        return StepResult("[5] learn 품질 검증", "skipped", f"{KEY_ENV} 없음")
+    return StepResult("[5] learn 품질 검증", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
 
 
 def step_model_comparison(workdir: Path) -> StepResult:
-    """[4] (키 필요 — 스켈레톤) 모델 비교: 같은 통계를 sonnet-5 / haiku-4-5 /
+    """[6] (키 필요 — 스켈레톤) 모델 비교: 같은 통계를 sonnet-5 / haiku-4-5 /
     opus-4-8로 각각 판정시켜 규칙 정확도·비용을 비교 → 설계 문서 §4 확정.
 
     키가 오면 채울 내용:
@@ -238,16 +338,16 @@ def step_model_comparison(workdir: Path) -> StepResult:
       → 정답지 대비 정확도 + usage 토큰 비용 표 생성
     """
     if not HAS_KEY:
-        return StepResult("[4] 모델 비교", "skipped", f"{KEY_ENV} 없음")
-    return StepResult("[4] 모델 비교", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
+        return StepResult("[6] 모델 비교", "skipped", f"{KEY_ENV} 없음")
+    return StepResult("[6] 모델 비교", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
 
 
 def step_review_llm_e2e(workdir: Path) -> StepResult:
-    """[5] (키 필요 — 스켈레톤) 리뷰 LLM triage e2e: `pumpkins --repo <workdir>`
+    """[7] (키 필요 — 스켈레톤) 리뷰 LLM triage e2e: `pumpkins --repo <workdir>`
     (LLM 켬)를 1회 실행해 triage·extra findings·토큰 사용량을 기록."""
     if not HAS_KEY:
-        return StepResult("[5] 리뷰 LLM triage e2e", "skipped", f"{KEY_ENV} 없음")
-    return StepResult("[5] 리뷰 LLM triage e2e", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
+        return StepResult("[7] 리뷰 LLM triage e2e", "skipped", f"{KEY_ENV} 없음")
+    return StepResult("[7] 리뷰 LLM triage e2e", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
 
 
 # ------------------------------------------------------------------ 채점표
@@ -296,6 +396,8 @@ def main() -> int:
         steps = [
             step1,
             step_cli_smoke(workdir),
+            step_scope_isolation(workdir),
+            step_store_format_equivalence(workdir),
             step_learn_quality(workdir),
             step_model_comparison(workdir),
             step_review_llm_e2e(workdir),

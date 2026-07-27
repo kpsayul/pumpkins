@@ -29,20 +29,27 @@ index 3333333..4444444 100644
 
 
 def test_parses_only_cpp_files():
-    files = parse_diff_text(SAMPLE_DIFF)
+    files, _ = parse_diff_text(SAMPLE_DIFF)
     assert [f.path for f in files] == ["src/worker.cpp"]
 
 
+def test_non_cpp_changes_are_reported_not_silently_dropped():
+    """A dropped file must still be named, so a zero-finding report cannot be
+    mistaken for a pass over the whole change."""
+    _, skipped = parse_diff_text(SAMPLE_DIFF)
+    assert skipped == ["README.md"]
+
+
 def test_added_line_ranges():
-    (f,) = parse_diff_text(SAMPLE_DIFF)
+    (f,), _ = parse_diff_text(SAMPLE_DIFF)
     ranges = [(r.start, r.end) for r in f.added_ranges]
     assert ranges == [(12, 13), (43, 43)]
 
 
 def test_patch_text_kept_for_llm_context():
-    (f,) = parse_diff_text(SAMPLE_DIFF)
+    (f,), _ = parse_diff_text(SAMPLE_DIFF)
     assert "cv_.notify_all();" in f.patch_text
 
 
 def test_empty_diff():
-    assert parse_diff_text("") == []
+    assert parse_diff_text("") == ([], [])

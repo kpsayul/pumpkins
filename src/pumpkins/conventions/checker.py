@@ -11,6 +11,9 @@ so this stage runs even without an API key and is CI-safe. The planned LLM
 assist (design doc 방안 B — judging context the rules can't express, proposing
 new rule candidates) layers on top later; facet="other" rules are skipped here
 until then.
+
+Each rule is applied only to the files its `scope` covers (conventions/scope.py),
+which is how a repo keeps different conventions in different subtrees.
 """
 
 from __future__ import annotations
@@ -19,15 +22,16 @@ import logging
 import re
 from pathlib import Path
 
-import yaml
 from unidiff import PatchSet
 
 from pumpkins.conventions.extractor import (
+    casing_matches,
     match_identifiers,
     sanitize_line,
     split_pattern,
 )
 from pumpkins.conventions.learner import ConventionRule
+from pumpkins.conventions.store import load_active_rules
 from pumpkins.models import DiffScope, Finding, Severity
 
 log = logging.getLogger(__name__)
@@ -39,16 +43,16 @@ _MEMBER_CONTEXT_RE = re.compile(
     r"^\s*(?:public|private|protected)\s*:|\b(?:class|struct)\s+[A-Za-z_]"
 )
 
-_PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "k": 1}
+_PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "m": 1, "k": 1, "s": 1, "g": 1}
 
 
 def load_conventions(path: Path) -> list[ConventionRule]:
-    """Load the adopted rules from a (possibly hand-edited) conventions.yml."""
-    try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
-        rules = [ConventionRule.model_validate(r) for r in (doc or {}).get("rules", [])]
-    except Exception as exc:
-        raise RuntimeError(f"could not parse conventions file {path}: {exc}") from exc
+    """Load the rules the review should enforce.
+
+    `path` is either a `conventions/` store (only `rules/` is enforced — pending
+    candidates deliberately have no effect) or a legacy single `conventions.yml`.
+    """
+    rules = load_active_rules(path)
     skipped = sum(1 for r in rules if r.facet == "other")
     if skipped:
         log.debug("%d rule(s) with facet=other are not auto-checkable — skipped", skipped)
@@ -65,6 +69,13 @@ def check_scope(scope: DiffScope, rules: list[ConventionRule]) -> list[Finding]:
     seen: set[tuple[str, str, str]] = set()  # (file, rule id, name) — report once
 
     for file_diff in scope.files:
+        # A rule only judges the files its scope covers, so legacy or generated
+        # subtrees can keep their own conventions instead of generating noise.
+        in_scope = [r for r in checkable if r.scope.applies_to(file_diff.path)]
+        if not in_scope:
+            log.debug("no in-scope convention rules for %s", file_diff.path)
+            continue
+
         try:
             patched = PatchSet(file_diff.patch_text)[0]
         except Exception as exc:
@@ -86,10 +97,10 @@ def check_scope(scope: DiffScope, rules: list[ConventionRule]) -> list[Finding]:
                     facets = dict(
                         zip(("prefix", "suffix", "casing"), split_pattern(name))
                     )
-                    for rule in checkable:
+                    for rule in in_scope:
                         if rule.category != category:
                             continue
-                        if facets[rule.facet] == rule.value:
+                        if _satisfies(facets[rule.facet], rule):
                             continue
                         key = (file_diff.path, rule.id, name)
                         if key in seen:
@@ -107,11 +118,24 @@ def check_scope(scope: DiffScope, rules: list[ConventionRule]) -> list[Finding]:
 
 # ------------------------------------------------------------------ internals
 
+def _satisfies(observed: str, rule: ConventionRule) -> bool:
+    """Whether an identifier's facet value satisfies the rule.
+
+    Casing is compared leniently: a single-word lowercase name carries no
+    casing signal, so `flush` must not be reported as breaking a lowerCamel
+    rule (see extractor.AMBIGUOUS_CASING).
+    """
+    if rule.facet == "casing":
+        return casing_matches(observed, rule.value)
+    return observed == rule.value
+
+
 def _violation_finding(path: str, line_no: int, name: str, rule: ConventionRule) -> Finding:
     """Build a question-form finding (design doc §3-(3): ask, don't accuse)."""
+    reach = "" if rule.scope.is_repo_wide else f", 적용 범위: {rule.scope.describe()}"
     explanation = (
         f"이 리포의 {rule.category} {rule.occurrences}개 중 {rule.coverage:.0%}가 "
-        f"이 관행을 따릅니다 (근거: conventions.yml `{rule.id}`). "
+        f"이 관행을 따릅니다 (근거: conventions.yml `{rule.id}`{reach}). "
         f"여기만 다르게 한 이유가 있을까요? 의도한 예외라면 무시하셔도 됩니다."
     )
     return Finding(

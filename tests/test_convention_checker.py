@@ -5,14 +5,20 @@ from pathlib import Path
 
 from pumpkins.conventions import (
     ConventionRule,
-    LearnResult,
+    StoredRule,
     check_scope,
     load_conventions,
-    render_conventions_yaml,
+    write_rule,
 )
 from pumpkins.conventions.extractor import extract_stats
 from pumpkins.diff import parse_diff_text
 from pumpkins.models import DiffScope
+
+
+def parse_diff_text_files(diff: str):
+    """Just the C++ FileDiffs — the skipped-path half is covered separately."""
+    files, _ = parse_diff_text(diff)
+    return files
 
 # Hunk 1 has class scaffolding (private:) → member matching enabled.
 # Hunk 2 has none → `int count;` there would be a local, not checked.
@@ -69,7 +75,7 @@ RULES = [
 
 
 def _scope() -> DiffScope:
-    return DiffScope(base_ref="main", files=parse_diff_text(DIFF))
+    return DiffScope(base_ref="main", files=parse_diff_text_files(DIFF))
 
 
 def test_checker_flags_violations_only():
@@ -107,7 +113,7 @@ index 1111111..2222222 100644
      bool m_running;
 +    int counter;
 """
-    scope = DiffScope(files=parse_diff_text(diff))
+    scope = DiffScope(files=parse_diff_text_files(diff))
     findings = check_scope(scope, RULES)
     assert len(findings) == 1
     assert "`counter`" in findings[0].title
@@ -118,16 +124,49 @@ def test_checker_without_checkable_rules():
     assert check_scope(_scope(), other_only) == []
 
 
-def test_conventions_yaml_roundtrip(tmp_path):
-    text = render_conventions_yaml(
-        Path("/repo"), "claude-sonnet-5", [], LearnResult(rules=RULES)
-    )
-    path = tmp_path / "conventions.yml"
-    path.write_text(text, encoding="utf-8")
+def test_store_roundtrip(tmp_path):
+    """A rule written to conventions/rules/ comes back checkable."""
+    root = tmp_path / "conventions"
+    for rule in RULES:
+        write_rule(root, "active", StoredRule(**rule.model_dump()))
 
-    loaded = load_conventions(path)
-    assert [r.id for r in loaded] == [r.id for r in RULES]
-    assert loaded[0].facet == "prefix" and loaded[0].value == "m_"
+    loaded = load_conventions(root)
+    assert {r.id for r in loaded} == {r.id for r in RULES}
+    by_id = {r.id for r in loaded}
+    assert "member-prefix-m_" in by_id
+    assert next(r for r in loaded if r.id == "member-prefix-m_").value == "m_"
+
+
+def test_legacy_single_file_still_loads(tmp_path):
+    """Repos that adopted pumpkins before the directory layout must keep working —
+    the old format is still read, just never written."""
+    path = tmp_path / "conventions.yml"
+    path.write_text(
+        "version: 1\n"
+        "rules:\n"
+        "  - id: member-prefix-m_\n"
+        "    category: member_variable\n"
+        "    description: 멤버 변수는 m_ 접두사를 사용한다\n"
+        "    facet: prefix\n"
+        "    value: m_\n"
+        "    coverage: 0.92\n"
+        "    occurrences: 187\n"
+        "    confidence: high\n",
+        encoding="utf-8",
+    )
+    (loaded,) = load_conventions(path)
+    assert loaded.id == "member-prefix-m_" and loaded.value == "m_"
+    assert loaded.scope.is_repo_wide  # absent scope defaults to repo-wide
+
+
+def test_candidates_are_not_enforced(tmp_path):
+    """Approval must be a real gate: a pending candidate has no effect on review."""
+    root = tmp_path / "conventions"
+    write_rule(root, "candidate", StoredRule(**RULES[0].model_dump()))
+    assert load_conventions(root) == []
+
+    write_rule(root, "active", StoredRule(**RULES[0].model_dump()))
+    assert [r.id for r in load_conventions(root)] == [RULES[0].id]
 
 
 def test_learn_stats_feed_checkable_rules(tmp_path):

@@ -16,6 +16,38 @@ _SEVERITY_EMOJI = {
 }
 
 
+def _coverage_section(result: ReviewResult) -> list[str]:
+    """List what the run did not examine, and why.
+
+    Silence and a pass look identical unless the gaps are named. Both gaps here
+    are structural rather than incidental: a non-C++ extension is dropped at
+    diff collection, and without a compile DB headers cannot be analyzed at
+    all — which in a header-only project means the entire implementation.
+    """
+    if not result.has_coverage_gap:
+        return []
+
+    lines = ["## ⚠️ 검사하지 못한 변경", ""]
+    if result.skipped_non_cpp:
+        lines.append(
+            f"**C++ 파일이 아니어서 읽지 않음** ({len(result.skipped_non_cpp)}개) — "
+            "이 파일의 변경은 어떤 단계도 보지 않았습니다."
+        )
+        lines.append("")
+        lines += [f"- `{p}`" for p in result.skipped_non_cpp]
+        lines.append("")
+    if result.skipped_headers:
+        lines.append(
+            f"**정적 분석 불가** ({len(result.skipped_headers)}개) — "
+            "compile_commands.json이 없어 헤더를 단독 분석할 수 없습니다. "
+            "컨벤션 대조와 LLM 리뷰는 이 파일에도 적용됩니다."
+        )
+        lines.append("")
+        lines += [f"- `{p}`" for p in result.skipped_headers]
+        lines.append("")
+    return lines
+
+
 def render_markdown(result: ReviewResult) -> str:
     lines: list[str] = []
     lines.append("# C++ Review Report")
@@ -25,22 +57,47 @@ def render_markdown(result: ReviewResult) -> str:
     lines.append(f"- check profile: `{result.profile}`")
     mode = "shallow (no compile_commands.json — lower confidence)" if result.shallow_mode else "compile-DB"
     lines.append(f"- analysis mode: {mode}")
-    llm = "yes" if result.llm_used else "no (raw clang-tidy output, untriaged)"
+    llm = (
+        f"{result.provider or '?'} / `{result.model or '?'}`"
+        if result.llm_used
+        else "no (raw clang-tidy output, untriaged)"
+    )
     lines.append(f"- LLM triage: {llm}")
     conv = (
-        f"{result.conventions_loaded} rule(s) from conventions.yml"
+        f"{result.conventions_loaded} active rule(s)"
         if result.conventions_loaded
         else "not loaded"
     )
+    if result.conventions_pending:
+        conv += (
+            f" — {result.conventions_pending} candidate(s) awaiting approval, "
+            f"not enforced"
+        )
     lines.append(f"- conventions: {conv}")
+    changed_cpp = result.analyzed_files + len(result.skipped_headers)
+    lines.append(
+        f"- coverage: {result.analyzed_files}/{changed_cpp} changed C++ file(s) "
+        f"statically analyzed"
+        + (f", {len(result.skipped_non_cpp)} non-C++ file(s) not read" if result.skipped_non_cpp else "")
+    )
     lines.append(
         f"- diagnostics: {result.total_diagnostics} raw → "
         f"{result.dropped_as_noise} dropped as noise → {len(result.findings)} finding(s)"
     )
     lines.append("")
 
+    lines.extend(_coverage_section(result))
+
     if not result.findings:
-        lines.append("✅ **No findings in the changed lines.**")
+        if result.has_coverage_gap:
+            # Never a green check when part of the change went unread: an
+            # unqualified pass on an unanalyzed diff is worse than no report.
+            lines.append(
+                "⚠️ **분석된 범위에서는 지적이 없습니다** — 다만 위 파일들은 "
+                "검사하지 못했으므로 이 결과를 통과로 읽지 마세요."
+            )
+        else:
+            lines.append("✅ **No findings in the changed lines.**")
         lines.append("")
         return "\n".join(lines)
 

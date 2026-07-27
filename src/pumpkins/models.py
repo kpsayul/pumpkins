@@ -34,6 +34,9 @@ class DiffScope(BaseModel):
 
     base_ref: str | None = None
     files: list[FileDiff] = Field(default_factory=list)
+    # Changed files dropped for not having a recognized C++ extension. Kept so
+    # the report can say what it did not look at, instead of implying it did.
+    skipped_files: list[str] = Field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -83,7 +86,26 @@ class ReviewResult(BaseModel):
     profile: str = "concurrency"
     shallow_mode: bool = False
     llm_used: bool = False
-    conventions_loaded: int = 0  # adopted rules loaded from conventions.yml
+    # Which model produced the LLM-judged findings. Recorded because a result you
+    # cannot attribute to a model is a result you cannot compare across models.
+    provider: str | None = None
+    model: str | None = None
+    conventions_loaded: int = 0  # active rules enforced this run
+    # Candidates awaiting a human decision. Reported because a rule sitting in
+    # conventions/candidates/ looks learned but is deliberately not enforced —
+    # without saying so, its absence from the findings reads as a pass.
+    conventions_pending: int = 0
     total_diagnostics: int = 0
     dropped_as_noise: int = 0
     findings: list[Finding] = Field(default_factory=list)
+
+    # What the run could NOT look at. Without this a report showing zero
+    # findings is indistinguishable from a report that never read the change,
+    # which is the one failure mode a review tool must never have.
+    analyzed_files: int = 0
+    skipped_non_cpp: list[str] = Field(default_factory=list)
+    skipped_headers: list[str] = Field(default_factory=list)
+
+    @property
+    def has_coverage_gap(self) -> bool:
+        return bool(self.skipped_non_cpp or self.skipped_headers)
