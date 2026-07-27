@@ -26,6 +26,7 @@ git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처�
 
 - **clang-tidy는 정밀한 그물, LLM은 diff를 직접 읽어 규칙·패턴을 잡는 넓은 그물** 역할. 리뷰어처럼 판단하는 몫은 LLM이 맡습니다.
 - 변경 라인 주변(±15줄)만 봅니다. 대상 프로젝트를 **빌드하지 않아도 동작** 하는데, 이건 도입 마찰을 낮추기 위한 선택이지 그 자체가 목적은 아닙니다.
+- **지적마다 출처 라벨이 붙습니다.** *"어떤 규칙 때문에 이 말을 했나"* 와 *"다시 돌리면 또 나오나"* 를 finding마다 기록합니다 — `규칙 \`member-prefix-m\` · convention · 재현 가능 · 근거 187개 중 92%`. 규칙 대조는 항상 같은 결과를 내지만 LLM 판단은 흔들리므로, **CI를 막을 수 있는 것은 재현 가능한 지적뿐**입니다. 리포트 상단에 그 개수가 요약됩니다.
 - **못 본 것을 말합니다.** 확장자 때문에 안 읽은 파일과 정적 분석이 불가능했던 헤더를 리포트에 이유와 함께 나열하고, 그런 공백이 있으면 finding이 0건이어도 `✅`를 쓰지 않습니다. "검사했는데 깨끗함"과 "검사를 못 함"이 구분되지 않는 초록 체크가 리뷰 도구에서 가장 위험하기 때문입니다.
 
 **② 컨벤션 학습 + 지적 (MVP 1·2단계)** — `pumpkins learn` → 리뷰에 자동 연결
@@ -64,7 +65,7 @@ git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ─�
 | `llm/postprocess.py` | LLM 구조화 출력으로 노이즈 필터 + 심각도 + 설명/수정안 + 추가 탐지 |
 | `report/markdown.py` | 마크다운 리포트 렌더링 |
 | `report/dump.py` | 실행 산출물 (`--out-dir`) — 리포트·원본 diff·LLM 프롬프트·실행 출처 |
-| `models.py` | 단계 간 데이터 계약 (`DiffScope`, `RawDiagnostic`, `Finding`, `ReviewResult`) |
+| `models.py` | 단계 간 데이터 계약 (`DiffScope`, `RawDiagnostic`, `Finding`, `Evidence`, `ReviewResult`) |
 | `conventions/extractor.py` | (learn L1) 정규식 기반 식별자 추출(멤버/상수/함수/클래스) → 명명 통계 |
 | `conventions/learner.py` | (learn L2) LLM 규칙 판정 + 임계선 게이트 — 무엇을 *제안*할지만 정함 |
 | `conventions/checker.py` | (리뷰 3.5단계) diff를 활성 규칙과 결정적 대조 → 질문형 finding |
@@ -202,7 +203,7 @@ out/
 
 ```json
 {
-  "llm": { "used": true, "provider": "openai", "model": "gpt-4o" },
+  "llm": { "used": true, "provider": "openai", "model": "gpt-4o", "temperature": 0.0 },
   "clang_tidy_version": "14.0.0",
   "conventions": { "active_rules": 2, "pending_candidates": 1,
                    "rules_fingerprint": "sha256:50f64bfbd136b9a9" },

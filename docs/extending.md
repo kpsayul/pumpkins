@@ -74,6 +74,12 @@ Stage 2의 계약은 `run(scope: DiffScope) -> list[RawDiagnostic]` 하나입니
 **분석하지 못한 파일은 러너가 노출해야 합니다** — `ClangTidyRunner`가 `skipped_headers`/`analyzed_files`를
 공개하는 것과 같은 방식으로. 조용히 건너뛰면 리포트가 그 파일을 검사한 것처럼 보입니다.
 
+새 분석기의 finding에는 **`Evidence`가 필수**입니다. `DetectorKind`에 항목을 추가하고,
+같은 입력에 같은 답을 내면 `DETERMINISTIC_DETECTORS`에도 넣으세요 — 그 집합이 CI를 막을 수 있는
+유일한 범위이므로, 확신이 없으면 넣지 마세요(안전한 실패 방향은 "재현 안 됨"입니다).
+결정적 분석기라도 **결과가 모델을 거쳐 걸러진다면 `reproducible=False`로 덮어써야 합니다** —
+clang-tidy 진단이 LLM triage를 통과한 경우가 그 예입니다.
+
 ## 리포트 포맷 추가
 
 Stage 4의 계약은 `render_*(result: ReviewResult) -> str`입니다.
@@ -135,6 +141,7 @@ LLM이 채우면 안 되는 필드를 `ConventionRule`에 넣으면 모델이 �
 |---|---|---|
 | 모델 변경 | CLI `--model` 또는 `config.DEFAULT_REVIEW_MODEL` / `DEFAULT_LEARN_MODEL` | 리뷰 `claude-opus-4-8`, 학습 `claude-sonnet-5` — 단계별 근거는 [설계 문서 §4](convention-detection-design.md) |
 | 프롬프트 | `llm/postprocess.py` `_SYSTEM_PROMPT` | 실패 시나리오를 구체적으로 쓰게 하는 문구가 핵심 |
+| 샘플링 온도 | `config.REVIEW_TEMPERATURE` / `LEARN_TEMPERATURE` | 리뷰는 `0.0` 고정(사용자에게 바로 가는 출력), 학습은 `None`(프로바이더 기본값 — 임계선·승인 게이트가 뒤에 있음). `None`은 파라미터를 **아예 보내지 않는다**는 뜻 — 일부 모델이 이 파라미터를 거부하므로 |
 | 출력 스키마 | `_Verdict`, `_ExtraFinding`, `_LlmReview` | Pydantic 모델 수정만으로 스키마 강제 유지 |
 | 대형 diff 청킹 | `process()` 호출 전 `DiffScope` 분할 | 파일 단위 분할 → 호출 병렬화 순서로 |
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 
-from pumpkins.models import ReviewResult, Severity
+from pumpkins.models import DetectorKind, Evidence, ReviewResult, Severity
 
 _SEVERITY_EMOJI = {
     Severity.critical: "🟥",
@@ -14,6 +14,21 @@ _SEVERITY_EMOJI = {
     Severity.low: "🟦",
     Severity.info: "⬜",
 }
+
+
+def _evidence_line(evidence: Evidence) -> str:
+    """One line answering 'why did it say this, and would it say it again?'."""
+    parts = [f"규칙 `{evidence.rule_id}`" if evidence.rule_id else "규칙 없음"]
+    who = evidence.detector.value
+    if evidence.detector is DetectorKind.llm and evidence.model:
+        who = f"{who}(`{evidence.model}`)"
+    parts.append(who)
+    parts.append("재현 가능" if evidence.reproducible else "모델 의존 — 재현 보장 안 됨")
+    if evidence.occurrences is not None and evidence.coverage is not None:
+        parts.append(f"근거 {evidence.occurrences}개 중 {evidence.coverage:.0%}")
+    if evidence.rule_scope and evidence.rule_scope != "리포 전체":
+        parts.append(f"적용 {evidence.rule_scope}")
+    return " · ".join(parts)
 
 
 def _coverage_section(result: ReviewResult) -> list[str]:
@@ -106,12 +121,21 @@ def render_markdown(result: ReviewResult) -> str:
         f"{_SEVERITY_EMOJI[s]} {s.value}: {counts[s]}" for s in Severity if counts[s]
     )
     lines.append(f"**Summary:** {summary}")
+
+    # The split that decides what may gate CI. Without it a model-dependent
+    # finding and a deterministic one are indistinguishable in the report.
+    stable = sum(1 for f in result.findings if f.evidence.reproducible)
+    unstable = len(result.findings) - stable
+    lines.append(
+        f"**재현성:** 재현 가능 {stable}건 (CI 게이트로 사용 가능) · "
+        f"모델 의존 {unstable}건 (다시 돌리면 달라질 수 있음 — 참고용)"
+    )
     lines.append("")
 
     for i, f in enumerate(result.findings, 1):
         lines.append(f"## {i}. {_SEVERITY_EMOJI[f.severity]} [{f.severity.value}] {f.title}")
         lines.append("")
-        lines.append(f"`{f.file}:{f.line}` — `{f.check}` (source: {f.source})")
+        lines.append(f"`{f.file}:{f.line}` — {_evidence_line(f.evidence)}")
         lines.append("")
         lines.append(f.explanation)
         if f.suggestion:

@@ -5,6 +5,11 @@ operation: "system + user prompt + Pydantic schema in → parsed object + token
 counts out". This module adapts that operation to the Anthropic and OpenAI
 SDKs; everything else (prompts, schemas, threshold gates) stays provider-free.
 
+`temperature` is the one sampling knob exposed, because it is the one that
+changed observed behaviour: with the API default the same diff produced 0
+findings on one run and 1 on the next (docs/architecture.md, Evidence). Passing
+None omits the parameter so the provider's own default applies.
+
 Auth: each SDK reads its own key from the environment (ANTHROPIC_API_KEY /
 OPENAI_API_KEY) — keys are never passed around in code. SDK imports happen
 lazily inside each client constructor so the --no-llm paths never pay for them.
@@ -38,7 +43,14 @@ class AnthropicClient:
         self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
     def parse(
-        self, *, model: str, max_tokens: int, system: str, user: str, schema: type[T]
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        system: str,
+        user: str,
+        schema: type[T],
+        temperature: float | None = None,
     ) -> ParsedResult[T]:
         response = self._client.messages.parse(
             model=model,
@@ -46,6 +58,10 @@ class AnthropicClient:
             system=system,
             messages=[{"role": "user", "content": user}],
             output_format=schema,
+            # Omitted entirely when None so the API default stands — some models
+            # reject the parameter outright, and callers that want the default
+            # should not have to guess what it is.
+            **({} if temperature is None else {"temperature": temperature}),
         )
         return ParsedResult(
             parsed=response.parsed_output,
@@ -61,7 +77,14 @@ class OpenAIClient:
         self._client = openai.OpenAI()  # reads OPENAI_API_KEY from env
 
     def parse(
-        self, *, model: str, max_tokens: int, system: str, user: str, schema: type[T]
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        system: str,
+        user: str,
+        schema: type[T],
+        temperature: float | None = None,
     ) -> ParsedResult[T]:
         # OpenAI has no separate system parameter — it rides in messages.
         response = self._client.beta.chat.completions.parse(
@@ -72,6 +95,7 @@ class OpenAIClient:
                 {"role": "user", "content": user},
             ],
             response_format=schema,
+            **({} if temperature is None else {"temperature": temperature}),
         )
         usage = response.usage
         return ParsedResult(

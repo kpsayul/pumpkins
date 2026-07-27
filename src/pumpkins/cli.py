@@ -19,6 +19,7 @@ from dotenv import find_dotenv, load_dotenv
 from pumpkins.analysis import CHECK_PROFILES, ClangTidyRunner
 from pumpkins.config import (
     CONVENTIONS_DIRNAME,
+    REVIEW_TEMPERATURE,
     CONVENTIONS_FILENAME,
     LEARN_TEST_DIRS,
     RULE_STATUS_DIRS as STATUS_DIRS,
@@ -30,7 +31,7 @@ from pumpkins.config import (
     setup_logging,
 )
 from pumpkins.diff import collect_diff
-from pumpkins.models import Finding, ReviewResult, Severity
+from pumpkins.models import DetectorKind, Evidence, Finding, ReviewResult, Severity
 from pumpkins.report import render_markdown
 from pumpkins.report.dump import RunContext, dump_run
 
@@ -138,12 +139,23 @@ def run_pipeline(args: argparse.Namespace) -> tuple[ReviewResult, RunContext]:
         )
         result.llm_used = True
         result.provider, result.model = current_provider(), processor.model
+        result.temperature = REVIEW_TEMPERATURE
         context.llm_request, context.llm_response = (
             processor.last_request, processor.last_response,
         )
     else:
+        # Untriaged clang-tidy output: no model touched it, so these are the
+        # only findings the pipeline can currently call fully reproducible.
         result.findings = [
-            Finding(file=d.file, line=d.line, check=d.check, title=d.message, explanation=d.message)
+            Finding(
+                file=d.file,
+                line=d.line,
+                title=d.message,
+                explanation=d.message,
+                evidence=Evidence(
+                    detector=DetectorKind.clang_tidy, rule_id=d.check or None
+                ),
+            )
             for d in diagnostics
         ]
 

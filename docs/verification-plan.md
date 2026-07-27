@@ -70,7 +70,8 @@ pumpkins --repo . --base B^ --out report.md
 | Recall | 사람이 짚었던 지적을 도구가 재현한 비율 | ≥ 50% |
 | Precision | 도구 finding 중 사람이 봐도 유효한 비율 | ≥ 60% |
 | 노이즈 감소율 | LLM triage가 버린 raw 진단 중 실제 노이즈였던 비율 | ≥ 80% |
-| LLM 기여도 | 전체 유효 finding 중 `source: llm` 비율 | 기록만 (설계 판단용) |
+| LLM 기여도 | 전체 유효 finding 중 `evidence.detector == llm` 비율 | 기록만 (설계 판단용) |
+| **재현성 비율** | `evidence.reproducible`인 finding 비율 — CI 게이트로 쓸 수 있는 몫 | 기록만. 같은 입력 3회 반복해 흔들리는 건수도 함께 측정 |
 | **모델 비교 (learn)** | 같은 리포의 컨벤션 추출을 Sonnet/Haiku/Opus로 각각 실행 → 추출 규칙의 정확도 비교 | Sonnet이 Opus 대비 손실 없으면 Sonnet 확정 ([설계 문서 §4](convention-detection-design.md) 모델 전략 검증) |
 | 비용/시간 | diff당 토큰 비용, wall time | 기록만 |
 

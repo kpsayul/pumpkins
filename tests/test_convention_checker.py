@@ -12,7 +12,7 @@ from pumpkins.conventions import (
 )
 from pumpkins.conventions.extractor import extract_stats
 from pumpkins.diff import parse_diff_text
-from pumpkins.models import DiffScope
+from pumpkins.models import DetectorKind, DiffScope
 
 
 def parse_diff_text_files(diff: str):
@@ -80,18 +80,21 @@ def _scope() -> DiffScope:
 
 def test_checker_flags_violations_only():
     findings = check_scope(_scope(), RULES)
-    by_check = {f.check: f for f in findings}
+    by_rule = {f.evidence.rule_id: f for f in findings}
 
     # `count` in the class hunk violates the member prefix rule
-    member = by_check["convention:member-prefix-m_"]
+    member = by_rule["member-prefix-m_"]
     assert "`count`" in member.title
-    assert member.source == "convention"
+    assert member.evidence.detector is DetectorKind.convention
     assert "m_count" in member.suggestion
     # question-form, evidence-backed explanation
     assert "?" in member.explanation and "92%" in member.explanation
+    # ...and the same numbers structured, not only in the prose
+    assert (member.evidence.occurrences, member.evidence.coverage) == (187, 0.92)
+    assert member.evidence.reproducible is True
 
     # `Do_Work` violates the function casing rule; submitTask conforms
-    func = by_check["convention:function-casing-lowerCamel"]
+    func = by_rule["function-casing-lowerCamel"]
     assert "`Do_Work`" in func.title
     assert func.suggestion == ""  # casing renames are left to the reviewer
 

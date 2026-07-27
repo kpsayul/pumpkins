@@ -20,9 +20,16 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from pumpkins.config import default_review_model
+from pumpkins.config import REVIEW_TEMPERATURE, default_review_model
 from pumpkins.llm.provider import get_client
-from pumpkins.models import DiffScope, Finding, RawDiagnostic, Severity
+from pumpkins.models import (
+    DetectorKind,
+    DiffScope,
+    Evidence,
+    Finding,
+    RawDiagnostic,
+    Severity,
+)
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +110,7 @@ class LlmPostProcessor:
             system=_SYSTEM_PROMPT,
             user=user_prompt,
             schema=_LlmReview,
+            temperature=REVIEW_TEMPERATURE,
         )
         review = result.parsed
         if review is None:
@@ -157,12 +165,21 @@ class LlmPostProcessor:
                 Finding(
                     file=d.file,
                     line=d.line,
-                    check=d.check,
                     severity=v.severity,
                     title=v.title or d.message,
                     explanation=v.explanation or d.message,
                     suggestion=v.suggestion,
-                    source="clang-tidy",
+                    # The defect is clang-tidy's, but its *presence in the
+                    # report* is not: the model decided to keep it, and a
+                    # re-run may drop it. So the rule id stays, and
+                    # reproducible is forced off — the same diagnostic reported
+                    # by `--no-llm` is reproducible, this one is not.
+                    evidence=Evidence(
+                        detector=DetectorKind.clang_tidy,
+                        rule_id=d.check or None,
+                        reproducible=False,
+                        model=self.model,
+                    ),
                 )
             )
         for e in review.extra_findings:
@@ -170,12 +187,13 @@ class LlmPostProcessor:
                 Finding(
                     file=e.file,
                     line=e.line,
-                    check="llm-review",
                     severity=e.severity,
                     title=e.title,
                     explanation=e.explanation,
                     suggestion=e.suggestion,
-                    source="llm",
+                    # Nothing but the model's judgement backs these, so they
+                    # carry no rule id and are marked non-reproducible.
+                    evidence=Evidence(detector=DetectorKind.llm, model=self.model),
                 )
             )
         order = list(Severity)

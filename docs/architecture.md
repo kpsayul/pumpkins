@@ -27,6 +27,53 @@
 각 단계는 [models.py](../src/pumpkins/models.py)에 정의된 Pydantic 모델만으로 통신합니다.
 단계 간 의존성이 데이터 모델뿐이므로, 어떤 단계든 독립적으로 교체·테스트할 수 있습니다.
 
+## Finding의 출처 — `Evidence`
+
+모든 `Finding`은 **필수** 필드로 `evidence`를 갖습니다. 출처 없는 지적을 만들 수 없게 하는 것이 이 모델의 존재 이유입니다.
+
+```python
+Evidence(detector=…, rule_id=…, reproducible=…, occurrences=…, coverage=…, rule_scope=…, model=…)
+```
+
+답하는 질문은 둘입니다 — **"어떤 규칙 때문에 이 말을 했나"** 와 **"다시 돌리면 또 나오나"**.
+이전에는 첫 번째가 세 가지 포맷이 섞인 `check` 문자열(`concurrency-mt-unsafe` / `llm-review` / `convention:<id>`)에 들어 있어 검증 하네스가 `removeprefix("convention:")`로 파싱했고, 두 번째는 **아예 기록되지 않았습니다.**
+
+### 재현성 규칙
+
+`reproducible`은 `detector`에서 자동으로 채워지므로(모델 검증기) 생산자가 잊거나 자기모순을 낼 수 없습니다.
+
+| detector | 기본 재현성 | 비고 |
+|---|---|---|
+| `clang-tidy` | ✅ | 단, LLM triage를 거치면 생산자가 `False`로 덮어씀 |
+| `convention` | ✅ | 규칙 파일 대조 — 결정적 |
+| `llm` | ❌ | 모델 판단 |
+
+`DETERMINISTIC_DETECTORS`가 **CI를 막을 수 있는 유일한 집합**입니다. 빌드를 깨뜨렸다가 재실행하면 통과하는 판정이 한 번만 생겨도 도구는 꺼지기 때문입니다. 실측 근거: 같은 diff·같은 모델·같은 규칙으로 두 번 돌렸을 때 finding이 0건과 1건으로 갈렸습니다.
+
+### 왜 결과가 흔들렸나, 그리고 temperature를 0으로 고정한 뒤
+
+원인은 둘이 겹친 것이었습니다. ① 샘플링 온도가 API 기본값(1.0)이라 매 호출이 확률 분포에서 답을 뽑았고, ② 하필 그 지적이 **경계선 판단**이었습니다 — 프롬프트의 "뮤텍스 없이 접근하는 공유 데이터를 찾아라"에는 걸리지만 "보수적으로 판단하라"에는 걸리는, `constexpr` 읽기 전용 배열. 확률이 반반으로 갈리는 자리라 실행마다 뒤집혔습니다.
+
+여기서 나오는 관찰: **흔들리는 지적은 경계선에 몰리고, 경계선은 대개 오탐입니다.** 명백한 결함과 명백한 무해는 거의 매번 같은 답이 나옵니다. 그래서 "모델 의존" 라벨이 붙은 지적은 평균 품질이 더 낮고, CI를 재현 가능한 것만으로 막자는 정책이 한 번 더 정당화됩니다.
+
+`REVIEW_TEMPERATURE = 0.0`으로 고정한 뒤 같은 명령을 3회 반복한 결과:
+
+| | 고정 전 | 고정 후 (3회) |
+|---|---|---|
+| finding 개수 | 0 / 1 / 1건 | **1 / 1 / 1건** |
+| 지적 위치 | 매번 다름 | **동일** |
+| 지적 제목 | — | *"Potential data race…"* / *"Data race…"* — **여전히 다름** |
+
+즉 **무엇을 지적할지는 안정됐지만 어떻게 표현할지는 여전히 흔들립니다.** 예상한 결과입니다 — 두 프로바이더 모두 temperature 0에서도 결정성을 보장하지 않습니다(GPU 배치·부동소수점 연산 순서). OpenAI의 `seed`는 최선 노력이고 Anthropic엔 없어서, 프로바이더 중립을 지향하는 이 파이프라인에선 기댈 수 없습니다. **재현 가능한 척하지 않고 라벨로 표시하는 것이 유일하게 정직한 선택지인 이유입니다.**
+
+미묘한 지점 하나 — **clang-tidy 진단이 LLM triage를 거치면 `reproducible=False`가 됩니다.** 결함 자체는 결정적이지만 *리포트에 실릴지*는 모델이 정하므로, 재실행 시 사라질 수 있습니다. 같은 진단이라도 `--no-llm`으로 나온 것만 재현 가능합니다.
+
+### 어디에 드러나는가
+
+- 리포트: finding마다 `규칙 \`member-prefix-m\` · convention · 재현 가능 · 근거 187개 중 92%`, 그리고 상단에 `**재현성:** 재현 가능 N건 · 모델 의존 M건` 요약
+- `findings.json`: evidence가 중첩 객체로 직렬화 — 규칙별 집계와 두 실행 비교가 가능해짐
+- `run.json`: `counts.reproducible` / `counts.model_dependent` — 두 실행의 차이가 후자에만 있으면 원인은 모델이지 회귀가 아님
+
 ## 단계별 상세
 
 ### Stage 1 — diff 수집·파싱 (`diff/collector.py`)
@@ -108,7 +155,7 @@ LLM의 역할은 두 갈래:
 | 항목 | 내용 |
 |---|---|
 | 입력 | `DiffScope` + `<repo>/conventions/rules/`의 **활성** 규칙 (`facet`/`value`/`scope`) |
-| 출력 | 질문형 `Finding[]` (`source: convention`, severity `low` 고정 — 네이밍이 버그를 이기지 않게) |
+| 출력 | 질문형 `Finding[]` (`evidence.detector = convention`, severity `low` 고정 — 네이밍이 버그를 이기지 않게) |
 | 실행 조건 | `conventions/`(또는 레거시 `conventions.yml`) 존재 시 자동 (`--conventions PATH` / `--no-conventions`) — **LLM·API 키 불필요, 결정적** |
 
 - **`candidates/`의 규칙은 적용되지 않습니다.** 승인이 실제 게이트여야 하므로 `load_active_rules`가 `rules/`만 읽고, 대기 중 후보 수는 리포트에 표시합니다 — 안 그러면 "학습했는데 지적이 없네"가 통과로 읽힙니다.

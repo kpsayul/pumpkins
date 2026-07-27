@@ -126,6 +126,7 @@ def dump_run(
                     "used": result.llm_used,
                     "provider": result.provider,
                     "model": result.model,
+                    "temperature": result.temperature,
                 },
                 "conventions": {
                     "path": str(context.conventions_path) if context.conventions_path else None,
@@ -143,6 +144,12 @@ def dump_run(
                     "raw_diagnostics": result.total_diagnostics,
                     "dropped_as_noise": result.dropped_as_noise,
                     "findings": len(result.findings),
+                    # The split that makes two runs comparable: a difference
+                    # confined to model_dependent is the model, not a regression.
+                    "reproducible": sum(1 for f in result.findings if f.evidence.reproducible),
+                    "model_dependent": sum(
+                        1 for f in result.findings if not f.evidence.reproducible
+                    ),
                 },
             },
             indent=2,

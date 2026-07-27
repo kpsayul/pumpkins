@@ -46,6 +46,25 @@ PROVIDER_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
 }
 
+# Sampling temperature per stage. None means "omit the parameter", so the
+# provider's own default applies.
+#
+# Review is pinned to 0: its output goes straight to the user, and with the API
+# default (1.0) the same diff, model and rules produced 0 findings on one run
+# and 1 on the next. The variance concentrates on borderline judgements, which
+# are disproportionately false positives — a `constexpr` array read without a
+# mutex matched "shared data accessed without a lock" half the time even though
+# it is read-only. Note this reduces flapping but does not remove it: neither
+# provider guarantees determinism at temperature 0, which is why findings still
+# carry a `reproducible` label rather than a promise.
+#
+# Learn keeps the default on purpose: it judges statistical patterns and is
+# asked to notice sample-based conventions the canned facets cannot express, so
+# some exploration helps. Its output is protected by the code-side threshold
+# gate, the reconcile step and human approval before anything is enforced.
+REVIEW_TEMPERATURE: float | None = 0.0
+LEARN_TEMPERATURE: float | None = None
+
 
 def current_provider() -> str:
     """The active LLM provider, from LLM_PROVIDER (default: anthropic)."""

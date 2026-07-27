@@ -8,7 +8,14 @@ which is the product's whole claim.
 import json
 
 from pumpkins.conventions import StoredRule, write_rule
-from pumpkins.models import Finding, RawDiagnostic, ReviewResult, Severity
+from pumpkins.models import (
+    DetectorKind,
+    Evidence,
+    Finding,
+    RawDiagnostic,
+    ReviewResult,
+    Severity,
+)
 from pumpkins.report import render_markdown
 from pumpkins.report.dump import RunContext, dump_run, rules_fingerprint
 
@@ -42,13 +49,17 @@ def test_dump_writes_the_expected_artifacts(tmp_path):
 
 def test_run_json_records_what_produced_the_result(tmp_path):
     result = ReviewResult(
-        llm_used=True, provider="openai", model="gpt-4o", profile="concurrency",
-        analyzed_files=2, shallow_mode=True,
+        llm_used=True, provider="openai", model="gpt-4o", temperature=0.0,
+        profile="concurrency", analyzed_files=2, shallow_mode=True,
     )
     out = _dump(tmp_path, result, RunContext(tool_version="14.0.0"))
 
     run = json.loads((out / "run.json").read_text(encoding="utf-8"))
-    assert run["llm"] == {"used": True, "provider": "openai", "model": "gpt-4o"}
+    # temperature belongs here too: it changes the result, so a run you cannot
+    # attribute to a sampling setting is a run you cannot compare.
+    assert run["llm"] == {
+        "used": True, "provider": "openai", "model": "gpt-4o", "temperature": 0.0,
+    }
     assert run["clang_tidy_version"] == "14.0.0"
     assert run["analysis_mode"] == "shallow"
     assert run["pumpkins_version"]
@@ -94,15 +105,18 @@ def test_findings_are_dumped_structured(tmp_path):
     result = ReviewResult(
         findings=[
             Finding(
-                file="src/a.cpp", line=7, check="convention:member-prefix-m_",
-                severity=Severity.low, title="`count`", explanation="…",
-                source="convention",
+                file="src/a.cpp", line=7, severity=Severity.low,
+                title="`count`", explanation="…",
+                evidence=Evidence(
+                    detector=DetectorKind.convention, rule_id="member-prefix-m_"
+                ),
             )
         ]
     )
     findings = json.loads((_dump(tmp_path, result) / "findings.json").read_text(encoding="utf-8"))
-    assert findings[0]["check"] == "convention:member-prefix-m_"
-    assert findings[0]["source"] == "convention"
+    assert findings[0]["evidence"]["rule_id"] == "member-prefix-m_"
+    assert findings[0]["evidence"]["detector"] == "convention"
+    assert findings[0]["evidence"]["reproducible"] is True
 
 
 def test_diagnostics_are_dumped_before_triage(tmp_path):

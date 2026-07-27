@@ -27,6 +27,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from pumpkins.config import (
+    LEARN_TEMPERATURE,
     MIN_RULE_CONSISTENCY,
     MIN_RULE_OCCURRENCES,
     default_learn_model,
@@ -170,6 +171,9 @@ class ConventionLearner:
             ),
             user=_render_stats_text(stats),
             schema=LearnResult,
+            # Passed explicitly (None → provider default) so the difference from
+            # the review stage is a recorded decision, not an oversight.
+            temperature=LEARN_TEMPERATURE,
         )
         result = parsed.parsed
         if result is None:

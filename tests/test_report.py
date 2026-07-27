@@ -6,7 +6,7 @@ whole logic change was a header, silently unanalyzable in shallow mode, and the
 report still said "No findings" — indistinguishable from a clean pass.
 """
 
-from pumpkins.models import Finding, ReviewResult, Severity
+from pumpkins.models import DetectorKind, Evidence, Finding, ReviewResult, Severity
 from pumpkins.report import render_markdown
 
 
@@ -55,6 +55,7 @@ def test_findings_still_render_alongside_the_coverage_warning():
                 severity=Severity.high,
                 title="data race on m_count",
                 explanation="two threads write without the mutex held",
+                evidence=Evidence(detector=DetectorKind.llm, model="gpt-4o"),
             )
         ],
     )

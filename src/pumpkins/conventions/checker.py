@@ -32,7 +32,7 @@ from pumpkins.conventions.extractor import (
 )
 from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.store import load_active_rules
-from pumpkins.models import DiffScope, Finding, Severity
+from pumpkins.models import DetectorKind, DiffScope, Evidence, Finding, Severity
 
 log = logging.getLogger(__name__)
 
@@ -141,13 +141,20 @@ def _violation_finding(path: str, line_no: int, name: str, rule: ConventionRule)
     return Finding(
         file=path,
         line=line_no,
-        check=f"convention:{rule.id}",
         # Question-form, low-stakes by design — naming never outranks a bug.
         severity=Severity.low,
         title=f"`{name}` — {rule.description} 관행과 다른 것 같아요",
         explanation=explanation,
         suggestion=_suggest_rename(name, rule),
-        source="convention",
+        evidence=Evidence(
+            detector=DetectorKind.convention,
+            rule_id=rule.id,
+            # The same numbers the explanation states in prose, kept structured
+            # so runs and rules can be compared without parsing Korean.
+            occurrences=rule.occurrences,
+            coverage=rule.coverage,
+            rule_scope=rule.scope.describe(),
+        ),
     )
 
 

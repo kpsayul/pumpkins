@@ -182,10 +182,12 @@ def step_checker_injection(workdir: Path) -> tuple[StepResult, dict]:
     rules = load_conventions(workdir / "conventions.yml")
     findings = check_scope(scope, rules)
 
+    # rule id는 evidence에서 바로 읽는다 — 예전에는 f.check 문자열에서
+    # "convention:" 접두사를 벗겨냈는데, 그건 계약이 아닌 포맷을 파싱하는 것이었다.
     observed = {
-        (f.check.removeprefix("convention:"), m.group(1))
+        (f.evidence.rule_id, m.group(1))
         for f in findings
-        if (m := re.match(r"`([^`]+)`", f.title))
+        if f.evidence.rule_id and (m := re.match(r"`([^`]+)`", f.title))
     }
     expected = {pair for inj in INJECTIONS for pair in inj.expected}
 
@@ -222,7 +224,9 @@ def step_cli_smoke(workdir: Path) -> StepResult:
         return StepResult("[2] CLI 스모크", "fail", proc.stderr.strip()[-300:])
     if "- conventions: 3 active rule(s)" not in proc.stdout:
         return StepResult("[2] CLI 스모크", "fail", "report missing conventions header")
-    n = proc.stdout.count("convention:")
+    n = proc.stdout.count("· convention ·")
+    if "**재현성:**" not in proc.stdout:
+        return StepResult("[2] CLI 스모크", "fail", "report missing reproducibility summary")
     return StepResult("[2] CLI 스모크", "pass", f"report OK, convention finding {n}건 포함")
 
 
@@ -294,7 +298,7 @@ def step_store_format_equivalence(workdir: Path) -> StepResult:
     from_legacy = check_scope(scope, legacy)
     from_store = check_scope(scope, load_conventions(root))
 
-    key = lambda fs: sorted((f.file, f.line, f.check, f.title) for f in fs)  # noqa: E731
+    key = lambda fs: sorted((f.file, f.line, f.evidence.rule_id, f.title) for f in fs)  # noqa: E731
     if key(from_legacy) != key(from_store):
         return StepResult(
             "[4] 저장소 포맷 등가성", "fail",

@@ -4,13 +4,17 @@ Data flow:
 
     git diff ──▶ DiffScope ──▶ list[RawDiagnostic] ──▶ list[Finding] ──▶ report.md
        (diff.collector)  (analysis.clang_tidy)   (llm.postprocess)   (report.markdown)
+
+Every Finding carries an `Evidence`: which rule produced it, which detector
+judged it, and whether the same input would produce it again. The convention
+checker (conventions.checker) is a third producer alongside the two above.
 """
 
 from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LineRange(BaseModel):
@@ -62,21 +66,69 @@ class Severity(str, Enum):
     info = "info"
 
 
+class DetectorKind(str, Enum):
+    """Who judged a finding."""
+
+    clang_tidy = "clang-tidy"
+    convention = "convention"  # deterministic match against conventions/rules/
+    llm = "llm"
+
+
+# Detectors that return the same answer for the same input. Only these may ever
+# gate CI: an LLM verdict that fails a build and then passes on re-run is how a
+# review tool gets switched off. Observed in practice — the same diff, model and
+# rules produced 0 findings on one run and 1 on the next.
+DETERMINISTIC_DETECTORS = frozenset({DetectorKind.clang_tidy, DetectorKind.convention})
+
+
+class Evidence(BaseModel):
+    """Why a finding exists — the part a machine can read.
+
+    Before this existed the answer lived in two overloaded strings (a `check`
+    field holding three different formats) and in prose inside the explanation,
+    so nothing could ask "which rule fired", "is this reproducible", or "did two
+    runs differ only in the unstable findings".
+
+    `reproducible` is derived from `detector` unless stated, so a new producer
+    cannot forget it or contradict itself.
+    """
+
+    detector: DetectorKind
+    rule_id: str | None = None  # None when nothing but the model's own judgement backs it
+    reproducible: bool = True
+
+    # Backing numbers for a convention rule (were prose in the explanation).
+    occurrences: int | None = None
+    coverage: float | None = None
+    rule_scope: str | None = None
+
+    # Which model judged it, for llm findings.
+    model: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_reproducible(cls, data: object) -> object:
+        if isinstance(data, dict) and data.get("reproducible") is None and "detector" in data:
+            detector = DetectorKind(data["detector"])
+            return {**data, "reproducible": detector in DETERMINISTIC_DETECTORS}
+        return data
+
+
 class Finding(BaseModel):
     """A triaged review finding, ready for the report.
 
-    Produced either by LLM triage of a RawDiagnostic, or directly by the LLM
-    from diff context (e.g. lock-order inversions clang-tidy can't see).
+    Produced by clang-tidy triage, by the LLM reading the diff directly, or by
+    the deterministic convention check. `evidence` is required — a finding
+    without provenance is exactly what this model exists to prevent.
     """
 
     file: str
     line: int
-    check: str = ""  # clang-tidy check name, or "llm-review" for LLM-originated
     severity: Severity = Severity.medium
     title: str
     explanation: str
     suggestion: str = ""  # human-readable fix proposal (may contain a code block)
-    source: str = "clang-tidy"  # "clang-tidy" | "llm" | "convention"
+    evidence: Evidence
 
 
 class ReviewResult(BaseModel):
@@ -90,6 +142,7 @@ class ReviewResult(BaseModel):
     # cannot attribute to a model is a result you cannot compare across models.
     provider: str | None = None
     model: str | None = None
+    temperature: float | None = None  # sampling setting also changes the result
     conventions_loaded: int = 0  # active rules enforced this run
     # Candidates awaiting a human decision. Reported because a rule sitting in
     # conventions/candidates/ looks learned but is deliberately not enforced —
