@@ -387,7 +387,26 @@ def run_learn(argv: list[str]) -> int:
     return 0
 
 
+def _force_utf8_streams() -> None:
+    """Make stdout/stderr UTF-8 regardless of the console's locale encoding.
+
+    On non-UTF-8 consoles (e.g. cp949 on Korean Windows) argparse's --help text
+    and log records containing characters like the em dash (—) raise
+    UnicodeEncodeError or render as mojibake. Reconfiguring the streams up front
+    makes the CLI behave the same everywhere.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # e.g. a capture buffer under pytest — leave it alone
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass  # detached/closed stream — nothing we can do, don't crash
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_streams()
     # .env fills in LLM_PROVIDER / API keys for people who prefer a file over
     # shell exports; real environment variables win (override=False).
     # usecwd=True: search from the invocation directory upward — without it,

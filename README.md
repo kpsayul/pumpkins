@@ -78,9 +78,11 @@ git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ─�
 
 ### 0. 요구사항 확인
 
-- **Python ≥ 3.10** — `python3 --version`
+- **Python ≥ 3.10** — 확인: macOS/Linux `python3 --version`, **Windows `python --version`** (또는 `py --version`).
+  - ⚠️ Windows에서 `python3`는 Microsoft Store 별칭이라 "Python was not found" 오류가 납니다. 실제 파이썬은 `python` 또는 `py`로 부르세요. (이 README의 이후 `python3` 명령은 Windows에서 모두 `py`로 바꿔 읽으면 됩니다.)
 - **clang-tidy** (PATH에 있어야 함) — `clang-tidy --version`
-  - macOS: `brew install llvm` 후 PATH에 추가, Ubuntu/Debian: `sudo apt install clang-tidy`
+  - **가장 간단(OS 공통, 권장)**: 아래 3단계에서 venv를 켠 뒤 `pip install clang-tidy` — 바이너리가 번들돼 있어 시스템 설치가 필요 없고 Windows·Linux·macOS 모두 동일합니다.
+  - 시스템 패키지로 깔려면 — macOS: `brew install llvm`(설치 후 PATH 추가), Ubuntu/Debian: `sudo apt install clang-tidy`, **Windows: `winget install LLVM.LLVM`** (설치 후 새 터미널).
 
 가상환경 생성 방법은 2단계에서 환경에 맞게 고르면 됩니다.
 
@@ -95,10 +97,13 @@ cd pumpkins
 
 프로젝트 전용 파이썬 환경을 만들어 의존성을 시스템과 격리합니다. 아래 **A / B 중 하나**로 `.venv/` 폴더를 만드세요.
 
-**방법 A — 표준 `venv`** (macOS, 대부분의 Linux)
+**방법 A — 표준 `venv`** (권장)
 
 ```bash
+# macOS / Linux
 python3 -m venv .venv
+# Windows (python3 는 Store 별칭이라 실패 — python 또는 py 사용)
+py -m venv .venv
 ```
 
 > Debian/Ubuntu·WSL에서는 `venv`가 별도 패키지라 이 명령이 실패할 수 있습니다. 그럴 땐 `sudo apt install python3-venv` 후 다시 실행하거나, 아래 방법 B를 쓰세요.
@@ -110,17 +115,28 @@ pip install --user virtualenv   # 한 번만
 virtualenv .venv
 ```
 
-**생성한 뒤 활성화** (A/B 공통)
+**생성한 뒤 활성화** (A/B 공통) — OS·셸에 따라 경로가 다릅니다. Windows는 `bin/`이 아니라 `Scripts/`입니다.
 
 ```bash
 # macOS / Linux
 source .venv/bin/activate
-# Windows (PowerShell)
-#   .venv\Scripts\Activate.ps1
-
-# 활성화되면 프롬프트 앞에 (.venv) 가 붙습니다.
-# 끝낼 때는 아무 데서나: deactivate
 ```
+
+```powershell
+# Windows — PowerShell
+.venv\Scripts\Activate.ps1
+#   ↳ "이 시스템에서 스크립트를 실행할 수 없으므로"(execution policy) 오류가 나면,
+#      현재 세션에만 허용하고 다시 실행:
+#      Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   ↳ 정책을 건드리기 싫으면 cmd 스타일 배치로: .venv\Scripts\activate.bat
+```
+
+```bash
+# Windows — Git Bash (bin 이 아니라 Scripts)
+source .venv/Scripts/activate
+```
+
+활성화되면 프롬프트 앞에 `(.venv)`가 붙습니다. 끝낼 때는 어느 셸에서든 `deactivate`.
 
 > `.venv/`는 커밋하지 않습니다(`.gitignore`에 포함). 사람마다 각자 로컬에 만듭니다.
 
@@ -137,7 +153,9 @@ pip install -e ".[dev]"
 Claude(Anthropic)와 GPT(OpenAI) 중 하나를 골라 씁니다. 키는 **환경변수로만** 전달합니다 (코드에 하드코딩 금지). 가장 쉬운 방법은 `.env` 파일:
 
 ```bash
+# macOS / Linux / Windows(PowerShell·Git Bash) 모두 cp 동작
 cp .env.example .env
+# ↳ Windows cmd.exe 라면: copy .env.example .env
 # .env를 열어 LLM_PROVIDER와 쓰는 쪽 키를 채우세요:
 #   LLM_PROVIDER=anthropic   (또는 openai)
 #   ANTHROPIC_API_KEY=sk-ant-...
@@ -146,11 +164,18 @@ cp .env.example .env
 
 `.env`는 `.gitignore`에 등록돼 있어 커밋되지 않습니다 — 사람마다 각자 만듭니다. CLI가 실행 시 현재 디렉터리의 `.env`를 자동으로 읽습니다.
 
-셸에서 직접 export해도 됩니다 (이 값이 `.env`보다 **우선**합니다 — CI나 일시적 전환에 유용):
+셸에서 직접 환경변수를 지정해도 됩니다 (이 값이 `.env`보다 **우선**합니다 — CI나 일시적 전환에 유용). 셸마다 문법이 다릅니다:
 
 ```bash
+# macOS / Linux / Git Bash
 export LLM_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
+```
+
+```powershell
+# Windows — PowerShell
+$env:LLM_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "sk-..."
 ```
 
 > 설계 배경(전환 로직·키 관리 원칙)은 [docs/llm-provider-and-keys-design.md](docs/llm-provider-and-keys-design.md).
