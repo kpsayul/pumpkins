@@ -1,53 +1,65 @@
 # 확장 가이드
 
-## 새 규칙 프로파일 추가 (버그 클래스 또는 컨벤션)
+## 새 규칙 프로파일 추가
 
-프로파일 하나 = "이 종류의 지적을 하겠다"는 단위입니다. 기능적 버그 클래스뿐 아니라
-**프로젝트 컨벤션**(이 아이템의 핵심 방향)도 같은 방식으로 프로파일로 얹습니다.
-[analysis/checks.py](../src/pumpkins/analysis/checks.py)의 `CHECK_PROFILES`에 키 하나 추가하면
-CLI `--profile` 선택지가 자동 생성됩니다.
+프로파일 하나 = "이 종류의 지적을 하겠다"는 단위입니다. **정의가 한 곳에 모여 있습니다** —
+[profiles.py](../src/pumpkins/profiles.py)의 `PROFILES`에 항목을 추가하면 clang-tidy 체크와
+LLM 지시문이 함께 붙고, CLI `--profile` 선택지도 자동 생성됩니다.
 
 ```python
-CHECK_PROFILES: dict[str, list[str]] = {
-    "concurrency": [...],
-    # 예: 메모리 안전성 프로파일 (clang-tidy 기반)
-    "memory": [
-        "bugprone-use-after-move",
-        "bugprone-dangling-handle",
-        "clang-analyzer-cplusplus.NewDelete*",
-        "clang-analyzer-cplusplus.Move",
-    ],
-    # 예: 컨벤션 프로파일 — clang-tidy readability-identifier-naming으로
-    #     일부 규칙은 기계적 확인이 가능하지만, "기존 코드의 관행 추론"은
-    #     결국 LLM 프롬프트 쪽이 담당한다 (아래 주의 참고).
-    "convention": [
-        "readability-identifier-naming",
-    ],
+PROFILES = {
+    "memory": Profile(
+        name="memory",
+        description="소유권·수명 오류",
+        clang_tidy_checks=[
+            "bugprone-use-after-move",
+            "bugprone-dangling-handle",
+        ],
+        llm_focus="""\
+Scan the diff for ownership and lifetime problems clang-tidy misses:
+- a reference or pointer outliving the object it refers to
+- ...
+""",
+    ),
 }
 ```
 
+> **왜 한 곳인가.** 예전에는 체크 목록이 `analysis/checks.py`에, 지시문이
+> `postprocess.py`의 동시성 전용 시스템 프롬프트에 하드코딩돼 있었습니다. 그래서 프로파일을
+> 늘리려면 아무도 안 쳐다보는 프롬프트를 같이 고쳐야 했고, 실제로 그게 안 됐습니다 —
+> fmt PR에 돌렸을 때 LLM 출력이 11토큰이었던 이유입니다. 프롬프트가 동시성만 물었고 그 PR엔
+> 동시성 코드가 없었으니, 모델은 지시를 정확히 따른 것이었습니다. 정작 실제 결함은
+> C++11 리포에 C++17 `inline` 변수를 넣어 CI를 깨뜨리는 것이었습니다.
+
 원칙:
 
-- **좁고 정밀하게.** clang-tidy 목록은 false positive가 적은 체크 위주로. 넓은 판단(특히 명문화 안 된 관행)은 LLM 쪽이 담당.
+- **clang-tidy 목록은 좁고 정밀하게.** false positive가 적은 체크 위주로. 넓은 판단은 `llm_focus`가 담당.
+- **`llm_focus`는 구체적으로.** 막연한 지시는 막연한 지적을 만듭니다. 무엇을 보고할지뿐 아니라
+  **무엇을 보고하지 말지도** 쓰세요 — `concurrency`가 *"초기화 후 불변인 데이터는 레이스가
+  불가능하니 보고하지 말라"* 를 명시하는 건 실측된 오탐(읽기 전용 `constexpr` 배열을 데이터
+  레이스로 지목)을 막기 위해서입니다.
 - `clang-analyzer-*` 체크는 컴파일 플래그 의존도가 높아 **얕은 모드에서 특히 부정확** — 넣는다면 compile-DB 모드 검증부터.
 - 체크 이름은 clang-tidy 버전에 따라 다름: `clang-tidy --list-checks -checks='*' | grep <keyword>`로 확인.
 
-> **컨벤션 프로파일의 핵심은 clang-tidy가 아니라 LLM입니다.** `readability-identifier-naming`은
-> 규칙을 사람이 명시해줘야 동작하지만, 이 아이템이 노리는 건 *"리포 기존 코드에서 관행을 읽어내
-> 어긋난 곳을 짚는"* 것 — 구체적인 구현 방향(사전 학습형 `conventions/` 저장소 등)은
-> [convention-detection-design.md](convention-detection-design.md)에 확정되어 있습니다.
+### 프로파일이 추가 입력을 필요로 할 때
 
-프로파일에 맞춰 **LLM 프롬프트도 갱신**해야 합니다 — [llm/postprocess.py](../src/pumpkins/llm/postprocess.py)의
-`_SYSTEM_PROMPT` task 3 목록이 concurrency 전용으로 하드코딩되어 있으므로, 프로파일이 늘어나면
-프로파일별 프롬프트 조각(dict)으로 분리하는 리팩토링을 먼저 하세요.
+`portability`는 "이 프로젝트가 지원하는 최소 C++ 표준"이 있어야 판단이 성립합니다. 그런 입력은
+**모델에게 추론시키지 말고 기계적으로 읽어서 프롬프트에 넣으세요** — 판단의 근거 자체를 모델이
+지어내게 하는 셈이 되니까요. `needs_cxx_standard=True`로 표시하면
+[analysis/cxx_standard.py](../src/pumpkins/analysis/cxx_standard.py)가 CMakeLists와 CI 매트릭스에서
+**가장 낮은 선언값**을 읽어 프롬프트에 붙입니다(그게 계속 컴파일돼야 하는 값이므로).
 
-> **이 리팩토링이 현재 1순위입니다.** fmt PR #4865에 돌렸을 때 LLM 출력이 11토큰이었습니다 —
-> 프롬프트가 동시성만 찾도록 고정돼 있고 그 PR엔 동시성 코드가 없었으니, 모델은 지시를 정확히
-> 따른 것입니다. 정작 그 PR의 실제 결함은 C++11을 지원하는 리포에 C++17 `inline` 변수를 넣어
-> CI를 깨뜨리는 것이었고, 이건 어떤 프로파일에도 속하지 않습니다.
-> 근거: [설계 문서 §6 "다음에 할 일"](convention-detection-design.md). (컨벤션 프로파일이라면
-"diff 주변의 기존 코드에서 명명·구조 관행을 먼저 추론한 뒤, 변경분이 그걸 어겼는지 판정하라"는
-지시가 이 자리에 들어갑니다.)
+선언이 없으면 기본값을 가정하지 않고 "선언 없음"이라고 알립니다. 최소 표준을 잘못 잡으면
+모든 현대적 문법이 오탐이 되기 때문입니다.
+
+### 프롬프트 조립
+
+[postprocess.py](../src/pumpkins/llm/postprocess.py)의 `build_system_prompt()`가 매 실행마다
+세 조각을 합칩니다:
+
+1. **공통** (`_BASE_PROMPT`) — 역할, triage 규칙, 출력 계약
+2. **프로파일** — `profile.llm_focus`가 "FOCUS" 절로, 필요하면 최소 C++ 표준 절이 앞에
+3. **저장소 규칙** — `conventions/rules/`의 활성 규칙
 
 ## 새 diff 소스 추가 (예: GitHub PR)
 

@@ -153,7 +153,11 @@ Fable 5($10/$50)는 최고난도 자율 에이전트용 — 이 파이프라인 
    - 질문형 + 근거 제시: *"member_variable 187개 중 92%가 이 관행을 따릅니다 … 여기만 다르게 한 이유가 있을까요?"*
    - **규칙 scope (구현됨)** — `paths`/`exclude_paths`/`extensions`로 파일별 적용 범위 제한. §3-(2)의 "디렉터리 단위 분리" 결정이 여기서 실체화됨
    - **규칙 저장소 + 승인 워크플로 (구현됨)** — `conventions/{rules,candidates,archive}/`. 상태=디렉터리, 이력=git, 재실행 시 결정 보존([store.py](../src/pumpkins/conventions/store.py))
-   - 남은 것(후속): `facet: other` 규칙의 LLM 문맥 보조(방안 B), casing 자동 rename 제안, `confidence` 기반 톤 전환
+   - **`facet: other` 규칙의 LLM 판정 (구현됨 — 방안 B)** — 정규식으로 표현 못 해 파일에 기록만 되고
+     체커가 건너뛰던 규칙을 리뷰 프롬프트에 넣어 LLM이 판정. **승인은 받아놓고 아무도 검사하지 않던
+     상태**가 해소됨. 실측: spdlog PR #2667에서 사람이 직접 쓴 규칙(*"조건부 컴파일로 갈린 공개 API에서
+     같은 이름이 한쪽은 함수, 다른 쪽은 타입이면 안 된다"*)을 LLM이 정확히 적발하고 rule_id를 인용함
+   - 남은 것(후속): casing 자동 rename 제안, `confidence` 기반 톤 전환, LLM 지적의 줄 번호 정확도
 3. 🟡 **자기 검증 (하네스 구축됨 — 키 필요 단계는 스켈레톤 대기)** —
    [verification/run_verification.py](../verification/run_verification.py)가 전체 flow를 실행:
    - ✅ 주입 검증(Track A, 키 불필요): 통제 fixture에 위반 5건+무해 3건 주입 → recall/precision 채점 → `verification/results/` 채점표. 현재 **recall 100% / precision 100%**

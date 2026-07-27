@@ -16,7 +16,8 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from pumpkins.analysis import CHECK_PROFILES, ClangTidyRunner
+from pumpkins.analysis import ClangTidyRunner
+from pumpkins.analysis.cxx_standard import detect_cxx_standard
 from pumpkins.config import (
     CONVENTIONS_DIRNAME,
     REVIEW_TEMPERATURE,
@@ -31,6 +32,7 @@ from pumpkins.config import (
     setup_logging,
 )
 from pumpkins.diff import collect_diff
+from pumpkins.profiles import DEFAULT_PROFILE, PROFILES
 from pumpkins.models import DetectorKind, Evidence, Finding, ReviewResult, Severity
 from pumpkins.report import render_markdown
 from pumpkins.report.dump import RunContext, dump_run
@@ -47,7 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--repo", type=Path, default=Path("."), help="target git repo (default: cwd)")
     p.add_argument("--base", default=None, help="base ref to diff against (e.g. main); omit for working-tree changes")
-    p.add_argument("--profile", default="concurrency", choices=sorted(CHECK_PROFILES), help="check profile")
+    p.add_argument(
+        "--profile",
+        default=DEFAULT_PROFILE,
+        choices=sorted(PROFILES),
+        help="what to look for — "
+        + ", ".join(f"{n}: {p.description}" for n, p in sorted(PROFILES.items())),
+    )
     p.add_argument(
         "--model",
         default=default_review_model(),
@@ -120,6 +128,26 @@ def run_pipeline(args: argparse.Namespace) -> tuple[ReviewResult, RunContext]:
         skipped_headers=runner.skipped_headers,
     )
 
+    # Rules are loaded BEFORE the LLM stage so they can go into its prompt: the
+    # model judges the rules a regex cannot express (facet: other), while the
+    # deterministic checker below keeps the ones it can. Design doc §2 방안 B.
+    rules: list = []
+    conv_path = args.conventions or _default_conventions_path(args.repo)
+    if not args.no_conventions and conv_path is not None and conv_path.exists():
+        from pumpkins.conventions import count_candidates, load_conventions
+
+        context.conventions_path = conv_path
+        rules = load_conventions(conv_path)
+        result.conventions_loaded = len(rules)
+        result.conventions_pending = count_candidates(conv_path)
+    elif args.conventions is not None and not args.conventions.exists():
+        raise RuntimeError(f"conventions path not found: {args.conventions}")
+    elif not args.no_conventions:
+        log.debug(
+            "no %s/ or %s in repo — convention check skipped",
+            CONVENTIONS_DIRNAME, CONVENTIONS_FILENAME,
+        )
+
     # Stage 3 — LLM triage (optional)
     use_llm = not args.no_llm
     if use_llm and not has_api_key():
@@ -133,9 +161,18 @@ def run_pipeline(args: argparse.Namespace) -> tuple[ReviewResult, RunContext]:
         # Imported lazily so --no-llm works without the provider SDK configured.
         from pumpkins.llm import LlmPostProcessor
 
-        processor = LlmPostProcessor(model=args.model)
+        processor = LlmPostProcessor(model=args.model, profile=args.profile)
+        cxx_standard = (
+            detect_cxx_standard(args.repo)
+            if processor.profile.needs_cxx_standard
+            else None
+        )
         result.findings, result.dropped_as_noise = processor.process(
-            scope, diagnostics, shallow_mode=runner.shallow_mode
+            scope,
+            diagnostics,
+            shallow_mode=runner.shallow_mode,
+            rules=rules,
+            cxx_standard=cxx_standard,
         )
         result.llm_used = True
         result.provider, result.model = current_provider(), processor.model
@@ -159,30 +196,18 @@ def run_pipeline(args: argparse.Namespace) -> tuple[ReviewResult, RunContext]:
             for d in diagnostics
         ]
 
-    # Stage 3.5 — convention check against conventions.yml (deterministic — runs
-    # with or without an API key; see docs/convention-detection-design.md §6-2)
-    if not args.no_conventions:
-        conv_path = args.conventions or _default_conventions_path(args.repo)
-        if conv_path is not None and conv_path.exists():
-            from pumpkins.conventions import check_scope, count_candidates, load_conventions
+    # Stage 3.5 — deterministic convention check on the rules loaded above.
+    # Runs with or without an API key (design doc §6-2); the LLM stage above
+    # covered the rules this one cannot express.
+    if rules:
+        from pumpkins.conventions import check_scope
 
-            context.conventions_path = conv_path
-            rules = load_conventions(conv_path)
-            result.conventions_loaded = len(rules)
-            result.conventions_pending = count_candidates(conv_path)
-            conv_findings = check_scope(scope, rules)
-            result.findings.extend(conv_findings)
-            log.info(
-                "conventions: %d rule(s) from %s → %d finding(s)",
-                len(rules), conv_path, len(conv_findings),
-            )
-        elif args.conventions:
-            raise RuntimeError(f"conventions path not found: {args.conventions}")
-        else:
-            log.debug(
-                "no %s/ or %s in repo — convention check skipped",
-                CONVENTIONS_DIRNAME, CONVENTIONS_FILENAME,
-            )
+        conv_findings = check_scope(scope, rules)
+        result.findings.extend(conv_findings)
+        log.info(
+            "conventions: %d rule(s) from %s → %d finding(s)",
+            len(rules), conv_path, len(conv_findings),
+        )
 
     # final ordering across all sources (clang-tidy / llm / convention)
     order = list(Severity)

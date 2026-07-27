@@ -137,18 +137,66 @@ Evidence(detector=…, rule_id=…, reproducible=…, occurrences=…, coverage=
 LLM의 역할은 두 갈래:
 
 1. **Triage** — 번호 붙인 진단 각각에 `keep/drop`, 심각도, 제목, 구체적 실패 시나리오 설명, 수정 제안을 판정. 얕은 모드일 때는 프롬프트에 "false positive 가능성 높음"을 명시해 보수적으로 판단하게 함.
-2. **독립 탐지 (`extra_findings`)** — clang-tidy가 구조적으로 못 잡는 패턴을 diff에서 직접 탐지:
-   - lock 획득 순서 역전 (경로별 불일치)
-   - guard mutex 없이 읽고/쓰는 공유 멤버
-   - 동기화 대용으로 쓰인 volatile
-   - predicate 없는 condition variable wait
-   - happens-before 없는 스레드 간 데이터 공개
+2. **독립 탐지 (`extra_findings`)** — clang-tidy가 구조적으로 못 잡는 것을 diff에서 직접 탐지. **무엇을 찾을지는 활성 프로파일이 정합니다** — clang-tidy는 정밀 필터, LLM은 넓은 그물.
 
-   → 요청한 핵심 버그 클래스의 실질 커버리지는 이쪽입니다. clang-tidy는 정밀 필터, LLM은 넓은 그물.
+### 시스템 프롬프트 조립 (`build_system_prompt`)
+
+프롬프트는 상수가 아니라 **매 실행마다 세 조각으로 조립**됩니다.
+
+| 조각 | 출처 | 내용 |
+|---|---|---|
+| 공통 | `_BASE_PROMPT` | 역할, triage 규칙, 출력 계약 |
+| 프로파일 | `profiles.PROFILES[name].llm_focus` | 이번 실행에서 무엇을 찾을지 (+ 필요 시 최소 C++ 표준) |
+| 저장소 규칙 | `conventions/rules/`의 활성 규칙 | 사람이 승인한 이 리포의 판단 기준 |
+
+이전에는 이게 동시성 전용 문자열 하나로 하드코딩돼 있었습니다. 그 대가가 실측으로 드러났는데 —
+어떤 PR에 돌렸을 때 LLM 출력이 11토큰이었습니다. 프롬프트가 동시성만 물었고 그 PR엔 동시성 코드가
+없었으니 모델은 지시를 정확히 따른 것이었고, 정작 실제 결함(C++11 리포에 C++17 `inline` 변수)은
+**어떤 프로파일에도 속하지 않아 원리적으로 나올 수 없었습니다.**
+
+### 규칙 주입 — 결정적 축과 겹치지 않게
+
+활성 규칙을 프롬프트에 넣되 **두 묶음으로 갈라서** 넣습니다.
+
+- `facet`이 prefix/suffix/casing인 규칙 → *"이미 기계 검사됨, 중복 지적 금지"*. 프로젝트 스타일을 이해시키되 같은 위반을 두 번 보고하지 않게 하려는 것.
+- `facet: other` 규칙 → *"이건 너만 검사할 수 있다"*. 정규식으로 표현 못 해 파일에 기록만 되고 아무도 검사하지 않던 규칙들이 여기서 처음 작동합니다 (설계 문서 §2 방안 B).
+
+LLM 지적이 규칙에 근거하면 `_ExtraFinding.rule_id`로 회수해 `Evidence.rule_id`에 넣습니다.
+detector는 여전히 `llm`이고 재현 보장은 없습니다 — **근거는 규칙이지만 판단은 모델의 것**이라서,
+그 구분이 라벨에 그대로 남습니다.
+
+**단, 승인된 규칙 목록에 없는 id는 버립니다**(`_verified_rule_id`). id를 적으라고 시키면 모델은
+그럴듯한 것을 지어낼 때가 있고, 그걸 받아들이면 **출처 라벨이 거짓말을 합니다** — 라벨이 막으려던
+바로 그 상황입니다. 알 수 없는 id는 제거하고 지적은 "규칙 없음(모델 자체 판단)"으로 남습니다.
+프롬프트로 부탁하는 게 아니라 코드가 거르며, `candidates/`는 애초에 `load_conventions`가 읽지 않으므로
+미승인 규칙이 근거로 등장할 수 없습니다.
+
+### 최소 C++ 표준 (`analysis/cxx_standard.py`)
+
+`portability` 프로파일은 "이 프로젝트가 지원하는 최소 표준"이 있어야 판단이 성립합니다.
+`inline constexpr`는 C++17 프로젝트에선 평범하고 C++11 프로젝트에선 빌드를 깹니다.
+
+그래서 모델에게 추론시키지 않고 **CMakeLists와 CI 매트릭스에서 기계적으로 읽습니다**
+(`cxx_std_NN`, `CMAKE_CXX_STANDARD`, `-std=c++NN`, CI의 `std: [...]`). **가장 낮은 선언값**이
+답입니다 — 그게 계속 컴파일돼야 하는 값이므로. 선언이 없으면 기본값을 가정하지 않고
+"선언 없음"이라고 프롬프트에 알립니다. 최소 표준을 잘못 잡으면 모든 현대적 문법이 오탐이 됩니다.
+
+실측 (두 리포):
+
+| 리포 | 감지한 최소 표준 | `--profile portability` 결과 |
+|---|---|---|
+| fmt PR #4865 | C++11 (CMakeLists + CI 2곳) | `inline` 변수(C++17) 적발, 3회 연속 동일. 수정 제안까지 정확(`inline` 제거) |
+| spdlog PR #2667 | C++11 (CMakeLists + CI) | `std::source_location`(C++20) 사용 2건 적발 |
+
+둘 다 **사람이 리뷰에서 짚었을 실제 결함**이고, 기존 `concurrency` 프로파일로는 원리적으로 나올 수
+없던 것들입니다.
 
 인증: 각 SDK가 자기 키(`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`)를 환경변수에서 직접 읽음. 코드·커밋되는 설정 파일에 키 없음. CLI 진입 시 cwd의 `.env`를 자동 로드하되 실제 환경변수가 우선(`override=False`) — 설계는 [llm-provider-and-keys-design.md](llm-provider-and-keys-design.md).
 
 방어 로직: LLM이 반환한 verdict index가 범위 밖이면 경고 후 무시. 파싱 결과가 None이면 명시적 에러.
+
+> **실행 순서 주의:** 규칙 로드가 Stage 3 **앞**으로 옮겨졌습니다. LLM 프롬프트에 규칙을 넣어야
+> 하므로, `cli.run_pipeline`이 규칙을 먼저 읽고 Stage 3와 3.5가 같은 목록을 공유합니다.
 
 ### Stage 3.5 — 컨벤션 대조 (`conventions/checker.py`)
 
