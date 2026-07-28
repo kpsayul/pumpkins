@@ -32,6 +32,7 @@ from pumpkins.conventions.extractor import (
 )
 from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.store import load_active_rules
+from pumpkins.languages import cpp
 from pumpkins.models import DetectorKind, DiffScope, Evidence, Finding, Severity
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,35 @@ log = logging.getLogger(__name__)
 _MEMBER_CONTEXT_RE = re.compile(
     r"^\s*(?:public|private|protected)\s*:|\b(?:class|struct)\s+[A-Za-z_]"
 )
+
+# A rule written before members were split by visibility still has to work: the
+# generic category matches either side. The reverse is deliberately not true —
+# a `private_member` rule never applies to a member whose visibility we could
+# not see, because guessing is how false positives get made.
+_CATEGORY_ALIASES = {"member_variable": ("private_member", "public_field")}
+
+
+def _category_matches(rule_category: str, observed: str) -> bool:
+    return observed == rule_category or observed in _CATEGORY_ALIASES.get(
+        rule_category, ()
+    )
+
+
+def _hunk_access(hunk) -> str | None:
+    """Visibility in effect for a diff hunk, or None when it is not visible.
+
+    A hunk shows only a window. If no specifier appears in it or in git's
+    section header, the visibility is unknown and members are left in the
+    generic category rather than assumed.
+    """
+    for text in [hunk.section_header or ""] + [l.value for l in hunk]:
+        m = cpp.ACCESS_RE.match(text)
+        if m:
+            return cpp.normalize_access(m.group(1))
+    for text in [hunk.section_header or ""] + [l.value for l in hunk]:
+        if re.search(r"\b(class|struct)\s+[A-Za-z_]", text):
+            return cpp.default_access(text)
+    return None
 
 _PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "m": 1, "k": 1, "s": 1, "g": 1}
 
@@ -89,16 +119,17 @@ def check_scope(scope: DiffScope, rules: list[ConventionRule]) -> list[Finding]:
             member_context = bool(
                 _MEMBER_CONTEXT_RE.search(hunk.section_header or "")
             ) or any(_MEMBER_CONTEXT_RE.search(l.value) for l in hunk)
+            access = _hunk_access(hunk) if member_context else None
             for line in hunk:
                 if not line.is_added or line.target_line_no is None:
                     continue
                 sanitized = sanitize_line(line.value.rstrip("\n"))
-                for category, name in match_identifiers(sanitized, member_context):
+                for category, name in match_identifiers(sanitized, member_context, access):
                     facets = dict(
                         zip(("prefix", "suffix", "casing"), split_pattern(name))
                     )
                     for rule in in_scope:
-                        if rule.category != category:
+                        if not _category_matches(rule.category, category):
                             continue
                         if _satisfies(facets[rule.facet], rule):
                             continue

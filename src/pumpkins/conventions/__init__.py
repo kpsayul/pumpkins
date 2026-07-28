@@ -3,6 +3,7 @@ from pumpkins.conventions.extractor import (
     CATEGORIES,
     CategoryStats,
     casing_matches,
+    detect_split_signal,
     extract_stats,
     select_files,
     split_pattern,
@@ -12,6 +13,7 @@ from pumpkins.conventions.learner import (
     ConventionRule,
     LearnResult,
     RejectedCandidate,
+    SplitHypothesis,
     apply_threshold_gate,
     render_stats_yaml,
 )

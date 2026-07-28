@@ -23,6 +23,7 @@ from pathlib import Path
 
 from pumpkins.analysis.checks import checks_arg
 from pumpkins.config import COMPILE_DB_CANDIDATES, LINE_FILTER_MARGIN, SHALLOW_MODE_STD
+from pumpkins.languages import cpp_tu_extensions
 from pumpkins.models import DiffScope, FileDiff, RawDiagnostic
 
 log = logging.getLogger(__name__)
@@ -33,8 +34,8 @@ _DIAG_RE = re.compile(
     r"(?P<level>warning|error): (?P<msg>.*?)(?: \[(?P<check>[\w\-.,]+)\])?$"
 )
 
-# Header files can't be compiled standalone in shallow mode; analyze only TUs there.
-_TU_EXTENSIONS = {".cpp", ".cc", ".cxx", ".c++"}
+# Header files can't be compiled standalone in shallow mode; analyze only TUs
+# there. Which suffixes count is per-repo — see pumpkins/languages/.
 
 
 class ClangTidyRunner:
@@ -50,6 +51,7 @@ class ClangTidyRunner:
         self.skipped_headers: list[str] = []
         self.analyzed_files = 0
         self._version: str | None = None
+        self._tu_extensions = cpp_tu_extensions(self.repo)
 
         if shutil.which(binary) is None:
             raise RuntimeError(f"{binary!r} not found on PATH — install clang-tidy first")
@@ -79,7 +81,7 @@ class ClangTidyRunner:
         self.skipped_headers = []
         analyzed = 0
         for file_diff in scope.files:
-            if self.shallow_mode and Path(file_diff.path).suffix.lower() not in _TU_EXTENSIONS:
+            if self.shallow_mode and Path(file_diff.path).suffix.lower() not in self._tu_extensions:
                 log.debug("skipping header in shallow mode: %s", file_diff.path)
                 self.skipped_headers.append(file_diff.path)
                 continue

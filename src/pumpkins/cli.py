@@ -339,6 +339,43 @@ def _format_reconciliation(root, rec, written, accept_all: bool) -> str:
     return "\n".join(lines)
 
 
+def _has_split_signal(stats) -> bool:
+    """Whether any category looks like two groups rather than one convention."""
+    from pumpkins.config import MIN_RULE_CONSISTENCY
+    from pumpkins.conventions import detect_split_signal
+
+    return any(
+        detect_split_signal(counts, total, MIN_RULE_CONSISTENCY)
+        for s in stats
+        for counts, total in (
+            (s.prefix_counts, s.total),
+            (s.suffix_counts, s.total),
+            (s.casing_counts, s.casing_informative),
+        )
+    )
+
+
+def _format_split_hypotheses(hypotheses, root) -> str:
+    """Categories that failed the threshold because they may hold two groups.
+
+    Not rules and never enforced — a question for a human. Acting on one means
+    either splitting the category in the extractor (when the boundary is
+    mechanically visible) or writing a scoped rule by hand.
+    """
+    lines = ["", f"규칙이 안 된 이유를 다시 볼 만한 것 {len(hypotheses)}건:"]
+    for h in hypotheses:
+        checkable = "기계 확인 가능" if h.checkable else "사람 판단 필요"
+        lines.append(f"  ? {h.category}.{h.facet} — {h.groups}")
+        if h.discriminator:
+            lines.append(f"      가르는 기준: {h.discriminator}  ({checkable})")
+        else:
+            lines.append(f"      가르는 기준을 찾지 못함 — 진짜 혼재로 보임")
+        if h.note:
+            lines.append(f"      {h.note}")
+    lines.append(f"  전문: {root.name}/config.yml 의 split_hypotheses")
+    return "\n".join(lines)
+
+
 def run_learn(argv: list[str]) -> int:
     args = build_learn_parser().parse_args(argv)
     setup_logging(args.verbose)
@@ -391,6 +428,20 @@ def run_learn(argv: list[str]) -> int:
             )
             return 1
 
+        # Naming a hidden split is inference, not the structured classification
+        # the learn tier was chosen for (design doc §4). Measured on fmt: the
+        # cheap tier saw the directories and still answered "no structural
+        # distinction"; the review tier read the same input and said
+        # "test/gtest vs include/fmt". So say so rather than return a useless
+        # hypothesis — the cost decision is the user's.
+        if _has_split_signal(stats) and args.model == default_learn_model():
+            log.warning(
+                "숨은 쪼개짐이 감지됐습니다 — 이 판단은 learn 기본 모델(%s)로는 "
+                "대개 실패합니다. `--model %s`로 다시 돌리면 가르는 기준을 얻을 수 "
+                "있습니다.",
+                args.model, default_review_model(),
+            )
+
         learner = ConventionLearner(model=args.model)
         result = learner.learn(stats, scan_scope)
 
@@ -404,8 +455,11 @@ def run_learn(argv: list[str]) -> int:
         write_config(
             root, args.repo, args.model, stats, scan_scope, scanned,
             rejected=[r.model_dump() for r in result.rejected],
+            split_hypotheses=[s.model_dump() for s in result.split_hypotheses],
         )
         print(_format_reconciliation(root, rec, written, args.accept_all))
+        if result.split_hypotheses:
+            print(_format_split_hypotheses(result.split_hypotheses, root))
     except Exception as exc:  # surface a clean error instead of a traceback wall
         log.error("%s", exc, exc_info=args.verbose)
         return 1

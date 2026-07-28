@@ -32,7 +32,7 @@ from pumpkins.config import (
     MIN_RULE_OCCURRENCES,
     default_learn_model,
 )
-from pumpkins.conventions.extractor import CategoryStats
+from pumpkins.conventions.extractor import CategoryStats, detect_split_signal
 from pumpkins.conventions.scope import RuleScope
 from pumpkins.llm.provider import get_client
 
@@ -88,6 +88,26 @@ know where a rule should be narrowed. The caller fills it in.
 Report rejected candidates briefly with a reason. Be conservative: every wrong
 rule becomes a false review comment later, and false comments are what make
 users turn the tool off.
+
+Some categories are marked POSSIBLE HIDDEN SPLIT. That means the numbers are
+close to two groups rather than scattered, which often happens when one
+category actually holds two kinds of thing with two different conventions —
+measured together they average into a number that passes no threshold. For each
+such marker, look at the raw samples and report a `split_hypotheses` entry:
+
+- `category` and `facet` copied exactly from the marker, nothing appended
+- what distinguishes the two groups, if you can tell. The directories listed
+  under each group are the most common answer: code from a bundled third-party
+  library, generated output, or test scaffolding follows its own conventions and
+  is not this project stating a rule. Other answers: interface types vs
+  implementations, static vs instance, public API vs internals.
+- `checkable: true` only when the distinguishing property is visible in the
+  declaration itself or in the file path, so a mechanical check could use it.
+  `false` when telling the groups apart needs understanding what the code means.
+- if the numbers look like genuine inconsistency rather than two groups, say so
+  and leave `discriminator` empty. Do not invent a boundary to explain noise.
+
+A split hypothesis is a question for a human, not a rule. It is never enforced.
 """
 
 
@@ -124,9 +144,26 @@ class RejectedCandidate(BaseModel):
     reason: str
 
 
+class SplitHypothesis(BaseModel):
+    """A guess at why a category failed the threshold: two groups, not noise.
+
+    Informational only — written to conventions/config.yml for a human to read.
+    Acting on it means either splitting the category in the extractor (when
+    `checkable`) or writing a scoped rule by hand, both human decisions.
+    """
+
+    category: str
+    facet: str
+    groups: str            # 관측된 두 무리
+    discriminator: str = ""  # 무엇이 둘을 가르는가 (모르면 빈 문자열)
+    checkable: bool = False  # 선언이나 경로에서 기계적으로 확인 가능한가
+    note: str = ""
+
+
 class LearnResult(BaseModel):
     rules: list[ConventionRule]
     rejected: list[RejectedCandidate] = Field(default_factory=list)
+    split_hypotheses: list[SplitHypothesis] = Field(default_factory=list)
 
 
 def apply_threshold_gate(result: LearnResult) -> LearnResult:
@@ -152,7 +189,9 @@ def apply_threshold_gate(result: LearnResult) -> LearnResult:
             )
         else:
             kept.append(rule)
-    return LearnResult(rules=kept, rejected=rejected)
+    return LearnResult(
+        rules=kept, rejected=rejected, split_hypotheses=result.split_hypotheses
+    )
 
 
 class ConventionLearner:
@@ -179,9 +218,11 @@ class ConventionLearner:
         if result is None:
             raise RuntimeError("LLM returned no parseable convention output")
         log.info(
-            "LLM proposed %d rule(s), %d rejection(s); tokens in=%d out=%d",
+            "LLM proposed %d rule(s), %d rejection(s), %d split hypothesis(es); "
+            "tokens in=%d out=%d",
             len(result.rules),
             len(result.rejected),
+            len(result.split_hypotheses),
             parsed.input_tokens,
             parsed.output_tokens,
         )
@@ -196,6 +237,31 @@ class ConventionLearner:
 
 # ----------------------------------------------------------------- rendering
 
+def _split_marker(stats: CategoryStats, facet: str, counts: dict[str, int], total: int) -> str:
+    signal = detect_split_signal(counts, total, MIN_RULE_CONSISTENCY)
+    if signal is None:
+        return ""
+    (a, na), (b, nb) = signal
+    # The names matter more than the percentages here: "63% vs 36%" says
+    # nothing, while `MatchAndExplain, DescribeTo` next to `format_to, vformat`
+    # says one group is a bundled test framework.
+    def group(value: str, count: int) -> str:
+        names = ", ".join(stats.facet_samples.get(f"{facet}={value}", [])) or "(none)"
+        dirs = ", ".join(stats.facet_dirs.get(f"{facet}={value}", [])) or "(unknown)"
+        return (
+            f"    value={value} ({count}, {count / total:.0%})\n"
+            f"      names: {names}\n"
+            f"      from:  {dirs}"
+        )
+
+    return (
+        f"POSSIBLE HIDDEN SPLIT in category={stats.category} facet={facet} "
+        f"— two groups, not scatter:\n"
+        f"{group(a, na)}\n{group(b, nb)}\n"
+        f"    What separates them? The directories are often the answer."
+    )
+
+
 def _render_stats_text(stats: list[CategoryStats]) -> str:
     parts = ["## Identifier statistics\n"]
     for s in stats:
@@ -207,7 +273,16 @@ def _render_stats_text(stats: list[CategoryStats]) -> str:
             f"{s.casing_ambiguous} single-word name(s) excluded as unsignalled): "
             f"{_fmt_counts(s.casing_counts, s.casing_informative)}"
         )
-        parts.append(f"samples:  {', '.join(s.samples) or '(none)'}\n")
+        parts.append(f"samples:  {', '.join(s.samples) or '(none)'}")
+        for facet, counts, total in (
+            ("prefix", s.prefix_counts, s.total),
+            ("suffix", s.suffix_counts, s.total),
+            ("casing", s.casing_counts, s.casing_informative),
+        ):
+            marker = _split_marker(s, facet, counts, total)
+            if marker:
+                parts.append(marker)
+        parts.append("")
     return "\n".join(parts)
 
 

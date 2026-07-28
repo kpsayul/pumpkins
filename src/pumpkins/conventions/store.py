@@ -267,6 +267,7 @@ def write_config(
     scan_scope: RuleScope | None = None,
     scanned_files: int | None = None,
     rejected: list[dict] | None = None,
+    split_hypotheses: list[dict] | None = None,
 ) -> Path:
     """Everything that is *not* a rule: what was measured, and how."""
     root.mkdir(parents=True, exist_ok=True)
@@ -282,6 +283,8 @@ def write_config(
             "min_consistency": MIN_RULE_CONSISTENCY,
         },
         "rejected_candidates": rejected or [],
+        # 규칙이 아니라 사람에게 던지는 질문 — "이 카테고리는 사실 둘인가?"
+        "split_hypotheses": split_hypotheses or [],
         # "왜 이 규칙이야?"의 원본 근거
         "stats_summary": {
             s.category: {

@@ -179,7 +179,52 @@ def test_learn_stats_feed_checkable_rules(tmp_path):
         "class Pool {\nprivate:\n    int m_size;\n};\n", encoding="utf-8"
     )
     stats = {s.category: s for s in extract_stats(tmp_path)}
-    dominant_prefix = max(
-        stats["member_variable"].prefix_counts, key=stats["member_variable"].prefix_counts.get
-    )
+    members = stats["private_member"]
+    dominant_prefix = max(members.prefix_counts, key=members.prefix_counts.get)
     assert dominant_prefix == "m_"  # exactly the string a rule's `value` would carry
+
+
+# ----------------------------------------- 카테고리 하위 호환 (접근 지정자 도입 후)
+
+def test_old_generic_member_rule_still_applies():
+    """멤버가 visibility로 갈리기 전에 쓰인 규칙이 계속 동작해야 한다 — 안 그러면
+    이미 승인해 커밋한 규칙이 조용히 죽는다."""
+    diff = """\
+diff --git a/src/pool.h b/src/pool.h
+index 1111111..2222222 100644
+--- a/src/pool.h
++++ b/src/pool.h
+@@ -10,2 +10,3 @@ class ThreadPool {
+ private:
+     std::mutex m_mutex;
++    int count;
+"""
+    scope = DiffScope(files=parse_diff_text_files(diff))
+    (finding,) = check_scope(scope, [RULES[0]])   # category: member_variable
+    assert "`count`" in finding.title
+
+
+def test_a_private_member_rule_respects_the_visibility_in_the_hunk():
+    """visibility로 갈린 규칙은 해당 구역에서만 동작해야 한다. spdlog에서 private은
+    `_` 100%, public은 13%였으니 public 필드에 이 규칙을 들이대면 전부 오탐이 된다."""
+    private_rule = RULES[0].model_copy(
+        update={"category": "private_member", "facet": "suffix", "value": "_"}
+    )
+
+    def scope_for(specifier: str) -> DiffScope:
+        diff = f"""\
+diff --git a/src/pool.h b/src/pool.h
+index 1111111..2222222 100644
+--- a/src/pool.h
++++ b/src/pool.h
+@@ -10,1 +10,2 @@ class ThreadPool {{
+ {specifier}
++    int count;
+"""
+        return DiffScope(files=parse_diff_text_files(diff))
+
+    # private 구역의 접미사 없는 멤버 → 규칙 위반
+    (finding,) = check_scope(scope_for("private:"), [private_rule])
+    assert "`count`" in finding.title
+    # 같은 줄이 public 구역이면 이 규칙의 대상이 아니다
+    assert check_scope(scope_for("public:"), [private_rule]) == []

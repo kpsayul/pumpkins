@@ -72,7 +72,7 @@ pumpkins --repo . --base B^ --out report.md
 | 노이즈 감소율 | LLM triage가 버린 raw 진단 중 실제 노이즈였던 비율 | ≥ 80% |
 | LLM 기여도 | 전체 유효 finding 중 `evidence.detector == llm` 비율 | 기록만 (설계 판단용) |
 | **재현성 비율** | `evidence.reproducible`인 finding 비율 — CI 게이트로 쓸 수 있는 몫 | 기록만. 같은 입력 3회 반복해 흔들리는 건수도 함께 측정 |
-| **모델 비교 (learn)** | 같은 리포의 컨벤션 추출을 Sonnet/Haiku/Opus로 각각 실행 → 추출 규칙의 정확도 비교 | Sonnet이 Opus 대비 손실 없으면 Sonnet 확정 ([설계 문서 §4](convention-detection-design.md) 모델 전략 검증) |
+| **모델 비교 (learn)** | 같은 리포의 컨벤션 추출을 여러 등급으로 실행 → 비교. **두 과제를 따로 잰다**: ① 규칙 판정 정확도 ② 숨은 쪼개짐의 가르는 기준을 알아내는가 | ①은 싼 등급도 통과했고 ②는 실패했다([설계 문서 §4.1](convention-detection-design.md)). 등급별로 두 축을 각각 기록해 2단 여과의 경계를 정한다 |
 | 비용/시간 | diff당 토큰 비용, wall time | 기록만 |
 
 기록 방법: 샘플별로 `report.md`와 함께 아래 형식의 채점표를 남김.

@@ -15,8 +15,8 @@ import sys
 
 # --- Pipeline constants -----------------------------------------------------
 
-# File extensions treated as C++ translation units / headers.
-CPP_EXTENSIONS = {".cpp", ".cc", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx", ".inl"}
+# C++ syntax — including which extensions count — lives in pumpkins/languages/cpp.py.
+# A repo can override the extension set; see languages/__init__.py.
 
 # Extra lines around each changed range passed to clang-tidy's --line-filter.
 # Concurrency bugs (lock ordering, unguarded member access) usually need the

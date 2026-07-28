@@ -15,7 +15,7 @@ from pathlib import Path
 
 from unidiff import PatchSet
 
-from pumpkins.config import CPP_EXTENSIONS
+from pumpkins.languages import cpp_extensions
 from pumpkins.models import DiffScope, FileDiff, LineRange
 
 log = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ def collect_diff(repo: Path, base: str | None = None) -> DiffScope:
     if proc.returncode != 0:
         raise RuntimeError(f"git diff failed: {proc.stderr.strip()}")
 
-    files, skipped = parse_diff_text(proc.stdout)
+    files, skipped = parse_diff_text(proc.stdout, cpp_extensions(repo))
     scope = DiffScope(base_ref=base, files=files, skipped_files=skipped)
     log.info(
         "diff: %d changed C++ file(s), %d changed range(s)%s",
@@ -49,7 +49,9 @@ def collect_diff(repo: Path, base: str | None = None) -> DiffScope:
     return scope
 
 
-def parse_diff_text(diff_text: str) -> tuple[list[FileDiff], list[str]]:
+def parse_diff_text(
+    diff_text: str, extensions: frozenset[str] | None = None
+) -> tuple[list[FileDiff], list[str]]:
     """Parse unified diff text into per-file added-line ranges.
 
     Returns (C++ files, paths skipped for not being C++). The second element is
@@ -57,6 +59,8 @@ def parse_diff_text(diff_text: str) -> tuple[list[FileDiff], list[str]]:
     """
     if not diff_text.strip():
         return [], []
+    if extensions is None:
+        extensions = cpp_extensions()
 
     files: list[FileDiff] = []
     skipped: list[str] = []
@@ -64,7 +68,7 @@ def parse_diff_text(diff_text: str) -> tuple[list[FileDiff], list[str]]:
         if patched_file.is_removed_file:
             continue
         path = patched_file.path  # new-side path
-        if Path(path).suffix.lower() not in CPP_EXTENSIONS:
+        if Path(path).suffix.lower() not in extensions:
             skipped.append(path)
             continue
 
