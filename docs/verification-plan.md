@@ -114,3 +114,45 @@ notes: ...
 | **다양성 우선** | 위 대상 후보 표는 "리뷰 이력이 풍부한" 기준이었는데, 실측에서 드러난 실패는 **명명 스타일의 다양성**에서 왔다. 헝가리안(`mFoo`) / 트레일링 언더스코어(`foo_`) / snake_case를 각각 대표하는 리포를 최소 하나씩 넣는다 |
 | **벤더 트리·생성 코드가 섞인 리포** | 오염 내구성 테스트. 정답은 "규칙을 안전하게 기각"하는 것 |
 | **헤더 온리 리포** | clang-tidy 축이 0건이 되는 조건을 지표에 명시적으로 기록 (fmt·사내 리포에서 재현됨) |
+
+### 구현: 실제 리포 learn 채점 (2026-07-28)
+
+위 "정답 공개 리포로 learn 채점"을 [score_real_repos.py](../verification/score_real_repos.py)로
+자동화했다. 세 리포를 얕게(depth 1) 작업 디렉터리에 클론하고(pumpkins 리포에 커밋하지 않는다),
+각 리포의 **문서화된(또는 de-facto) 스타일을 정답지**로 삼아 `learn`이 채택한 규칙의
+정확도를 잰다. 채점표는 `verification/results/real-repos-*.md`.
+
+```bash
+python verification/score_real_repos.py                  # 기본 learn 모델로 3개 리포 채점
+python verification/score_real_repos.py --compare-models # provider의 모든 tier로 비교(호출 다수)
+python verification/score_real_repos.py --clone-dir DIR --keep-clones  # 재클론 방지
+```
+
+정답지 근거 (리포 자체 문서에서 인용) 와 대표 스타일:
+
+| 리포 | 정답지 근거 | 정답 규칙 (category/facet=value) |
+|---|---|---|
+| **fmt** | `CONTRIBUTING.md`: Google C++ Style, 단 함수/타입은 snake_case | function/casing=lower_snake, class_type/casing=lower_snake, member/casing=lower_snake |
+| **googletest** | `CONTRIBUTING.md`: Google C++ Style Guide | function/casing=UpperCamel, class_type/casing=UpperCamel, member/suffix=`_` |
+| **Catch2** | 명문 네이밍 문서 없음 → de-facto(관측 지배 + 통용) | member/prefix=m_, function/casing=lowerCamel, class_type/casing=UpperCamel |
+
+채점 정의: **recall** = 정답 규칙 중 learn이 채택한 비율, **precision** = 정답이 정의한
+축(category,facet)에 올린 규칙 중 값이 맞은 비율(정답지가 다루지 않는 축의 추가 채택은
+벌하지 않는다). 채점표는 규칙마다 **관측 커버리지**와 **게이트(occurrences ≥ 20 AND
+coverage ≥ 85%) 통과 여부**를 같이 실어, 왜 채택/기각됐는지를 스스로 설명한다.
+
+이 셋은 실측에서 확인된 세 가지 서로 다른 상황을 대표한다:
+
+- **fmt** — 깨끗한 snake_case. learn이 재현해야 정상(양성 케이스).
+- **googletest** — 함수/타입 UpperCamel은 게이트를 넘지만, 문서가 요구하는 멤버 트레일링
+  `_`는 공개 struct 멤버가 섞여 관측 ~71%로 게이트에 못 미친다 → learn이 **문서화된
+  규칙을 놓치는** 것이 관측된다(recall 손실). 이게 "픽스처 100%인데 실제에서 틀림"의 정체.
+- **Catch2** — 관행(m_/lowerCamel/UpperCamel)이 모두 85% 미만 → learn이 **안전하게 기각**하는
+  것이 정답. 지저분한 리포에서 오채택을 만들지 않는지 보는 오염 내구성 축.
+
+`run_verification.py`의 [5]/[6]도 스켈레톤에서 구현으로 바꿨다. 다만 픽스처는 식별자가
+게이트보다 적어(6/6/2 vs 20), 통계를 분포 보존한 채 게이트 위로 스케일해 LLM의 패턴
+식별력을 잰다 — 픽스처의 이 작음 자체가 통제 환경의 한계를 재확인한다. [6]의 모델 tier
+비교(설계 §4 haiku/sonnet/opus)는 활성 provider가 anthropic이고 유효한
+`ANTHROPIC_API_KEY`가 있을 때만 그 세 tier로 돈다(그 외 provider면 해당 provider의
+tier로 대신 비교하고 그 사실을 채점표에 남긴다).

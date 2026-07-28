@@ -15,11 +15,18 @@
   [4] 저장소 포맷 등가성   (키 불필요 — 실제 실행)
       레거시 conventions.yml과 conventions/ 저장소가 같은 지적을 내는지 +
       미승인 후보(candidates/)가 리뷰에 적용되지 않는지
-  [5] learn 품질 검증     (키 필요 — 스켈레톤: fixture에 learn을 돌려 생성된
-      conventions.yml을 정답지와 비교. 키 오면 여기만 채우면 됨)
-  [6] 모델 비교           (키 필요 — 스켈레톤: 같은 통계를 sonnet/haiku/opus로
-      판정시켜 규칙 정확도 비교 → 설계 문서 §4 모델 전략 확정)
-  [7] 리뷰 LLM triage e2e (키 필요 — 스켈레톤)
+  [5] learn 품질 검증     (키 필요 — 구현됨: fixture 통계로 learn을 돌려 채택된
+      규칙을 정답지(fixture/conventions.yml)와 (category,facet,value)로 비교.
+      픽스처는 식별자가 게이트보다 적어 통계를 게이트 위로 스케일해 LLM의 패턴
+      식별력을 잰다 — learn_scoring.scale_to_gate 참조)
+  [6] 모델 비교           (키 필요 — 구현됨: 같은 통계를 활성 provider의 tier들로
+      판정시켜 규칙 정확도·토큰·비용 비교. anthropic이면 haiku/sonnet/opus로
+      설계 문서 §4를 판정 — 단 실제 ANTHROPIC_API_KEY가 있어야 그 tier가 돈다)
+  [7] 리뷰 LLM triage e2e (키 필요 — 스켈레톤; 이번 작업 범위 아님)
+
+정답이 공개된 실제 오픈소스 리포(fmt/googletest/Catch2)로 learn을 채점하는
+확장은 별도 스크립트다: `python verification/score_real_repos.py`
+(docs/verification-plan.md "픽스처 검증의 한계" 참조).
 
 사용:
     python verification/run_verification.py [--keep-workdir]
@@ -42,15 +49,27 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from pumpkins.config import current_provider, has_api_key, required_key_env, setup_logging
+from pumpkins.config import (
+    MIN_RULE_OCCURRENCES,
+    current_provider,
+    default_learn_model,
+    has_api_key,
+    required_key_env,
+    setup_logging,
+)
 from pumpkins.conventions import (
     RuleScope,
     StoredRule,
     check_scope,
+    extract_stats,
     load_conventions,
     write_rule,
 )
 from pumpkins.diff import collect_diff
+
+# 같은 디렉터리의 채점 헬퍼 — 이 파일은 스크립트로 실행되므로 verification/이
+# sys.path[0]에 올라 flat import가 된다 (score_real_repos.py도 동일).
+import learn_scoring  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE = ROOT / "fixture"
@@ -146,7 +165,12 @@ class StepResult:
 
 
 def _run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # encoding 고정: 자식(pumpkins.cli 등)은 stdout을 UTF-8로 내보내는데, 부모가
+    # locale(한국어 Windows는 cp949)로 디코딩하면 em대시 등에서 UnicodeDecodeError로
+    # 죽어 proc.stdout이 None이 된다. UTF-8로 읽고, 혹시 모를 바이트는 replace.
+    return subprocess.run(
+        cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
 
 
 def setup_workdir(keep: bool) -> Path:
@@ -218,7 +242,7 @@ def step_cli_smoke(workdir: Path) -> StepResult:
         return StepResult("[2] CLI 스모크", "skipped", "clang-tidy not installed")
     proc = subprocess.run(
         [sys.executable, "-m", "pumpkins.cli", "--repo", str(workdir), "--no-llm"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         return StepResult("[2] CLI 스모크", "fail", proc.stderr.strip()[-300:])
@@ -318,32 +342,184 @@ def step_store_format_equivalence(workdir: Path) -> StepResult:
     )
 
 
-def step_learn_quality(workdir: Path) -> StepResult:
-    """[5] (키 필요 — 스켈레톤) learn 품질: fixture에 `pumpkins learn`을 돌려
-    생성된 conventions.yml을 정답지(fixture/conventions.yml)와 비교.
+def _fixture_expected() -> list[learn_scoring.ExpectedRule]:
+    """정답지(fixture/conventions.yml)의 규칙을 채점용 ExpectedRule로 변환."""
+    answer = load_conventions(FIXTURE / "conventions.yml")
+    return [
+        learn_scoring.ExpectedRule(r.category, r.facet, r.value, source="fixture/conventions.yml")
+        for r in answer
+        if r.facet in ("prefix", "suffix", "casing")
+    ]
 
-    키가 오면 채울 내용:
-      1. `pumpkins learn --repo <workdir> --out <workdir>/learned.yml`
-      2. load_conventions()로 양쪽 로드 → (category, facet, value) 집합 비교
-      3. 규칙 recall/precision을 채점표에 기록
+
+LEARN_SAMPLES = 3  # 같은 입력 반복 횟수 — 재현성(flap) 측정 (verification-plan 측정지표)
+
+
+def step_learn_quality(workdir: Path) -> tuple[StepResult, list[str]]:
+    """[5] learn 품질: fixture 통계로 learn을 돌려 채택 규칙을 정답지와 대조.
+
+    두 가지를 함께 잰다:
+    - 정확도: 채택 규칙의 recall/precision (정답지 = fixture/conventions.yml)
+    - 재현성: 같은 입력을 LEARN_SAMPLES회 반복해 규칙셋이 얼마나 흔들리는지(flap).
+      learn 온도가 제품 기본값(openai=1.0)이라 작은 입력에서 특히 흔들린다 —
+      단발 채점은 오해를 부르므로 평균과 flap을 같이 남긴다.
+
+    픽스처는 식별자가 6/6/2개뿐이라 MIN_RULE_OCCURRENCES(20) 게이트에 전부 걸린다.
+    그대로 돌리면 정답과 무관하게 0규칙이 나오므로, 분포를 보존한 채 통계를 게이트
+    위로 스케일해(learn_scoring.scale_to_gate) LLM의 (category,facet,value) 식별력을
+    잰다. 게이트 자체는 키 없는 결정적 단계에서 이미 검증된다.
     """
+    name = "[5] learn 품질 검증"
     if not HAS_KEY:
-        return StepResult("[5] learn 품질 검증", "skipped", f"{KEY_ENV} 없음")
-    return StepResult("[5] learn 품질 검증", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
+        return StepResult(name, "skipped", f"{KEY_ENV} 없음"), []
+
+    expected = _fixture_expected()
+    # 깨끗한 픽스처의 통계를 쓴다 — workdir은 주입 위반이 섞여 관행이 게이트 아래로
+    # 내려가므로(그건 [1]이 재현할 대상이다), learn 품질은 정답지가 기술하는 원본
+    # 픽스처에서 재야 한다.
+    stats = extract_stats(FIXTURE)
+    scaled, factor = learn_scoring.scale_to_gate(stats, MIN_RULE_OCCURRENCES)
+    model = default_learn_model()
+
+    samples: list[tuple[learn_scoring.Score, learn_scoring.LearnRun]] = []
+    errors: list[str] = []
+    for _ in range(LEARN_SAMPLES):
+        try:
+            run = learn_scoring.learn_with_usage(scaled, model=model)
+        except Exception as exc:  # 재시도까지 소진한 실패 — 기록하고 계속
+            errors.append(str(exc))
+            continue
+        samples.append((learn_scoring.score_rules(run.rules, expected), run))
+
+    if not samples:
+        return StepResult(name, "fail", f"learn {LEARN_SAMPLES}회 모두 실패: {errors[-1]}"), []
+
+    recalls = [s.recall for s, _ in samples]
+    precisions = [s.precision for s, _ in samples]
+    mean_recall = sum(recalls) / len(recalls)
+    mean_precision = sum(precisions) / len(precisions)
+    distinct_rulesets = {tuple(s.adopted) for s, _ in samples}
+    flap = len(distinct_rulesets)  # 1이면 안정, >1이면 흔들림
+    total_tok = sum(r.total_tokens for _, r in samples)
+    costs = [r.cost_usd for _, r in samples if r.cost_usd is not None]
+    total_cost = sum(costs) if costs else None
+
+    ok = mean_recall >= PASS_LINE and mean_precision >= PASS_LINE
+    detail = (
+        f"recall 평균 {mean_recall:.0%} {[f'{r:.0%}' for r in recalls]}, "
+        f"precision 평균 {mean_precision:.0%}; flap {flap}종/{len(samples)}회 "
+        f"({'안정' if flap == 1 else '흔들림'}); {model} ×{len(samples)}, {total_tok} tok"
+        + (f", ≈${total_cost:.4f}" if total_cost is not None else "")
+        + (f"; 실패 {len(errors)}회" if errors else "")
+    )
+
+    section = [
+        "## [5] learn 품질 상세",
+        "",
+        f"- 모델: `{model}` (provider {PROVIDER}) / 통계 ×{factor} 스케일 "
+        f"(픽스처가 게이트 {MIN_RULE_OCCURRENCES} 미만이라 분포 보존 후 표본 확대)",
+        f"- 정답지: fixture/conventions.yml ({len(expected)}개 규칙)",
+        f"- recall 평균 {mean_recall:.0%} / precision 평균 {mean_precision:.0%} "
+        f"({len(samples)}회 샘플)",
+        f"- 재현성(flap): 서로 다른 규칙셋 {flap}종 → "
+        f"{'같은 결과로 안정' if flap == 1 else '입력이 같아도 결과가 흔들림 (learn 기본 온도)'}",
+    ]
+    if errors:
+        section.append(f"- ⚠️ 파싱 실패 {len(errors)}회 (재시도 소진): {errors[-1][:120]}")
+    section += [
+        "",
+        "| 샘플 | recall | precision | 채택 규칙 | tok |",
+        "|---|---|---|---|---|",
+    ]
+    for i, (score, run) in enumerate(samples, 1):
+        section.append(
+            f"| {i} | {score.recall:.0%} | {score.precision:.0%} | "
+            f"{score.adopted or '없음'} | {run.total_tokens} |"
+        )
+    return StepResult(name, "pass" if ok else "fail", detail), section
 
 
-def step_model_comparison(workdir: Path) -> StepResult:
-    """[6] (키 필요 — 스켈레톤) 모델 비교: 같은 통계를 sonnet-5 / haiku-4-5 /
-    opus-4-8로 각각 판정시켜 규칙 정확도·비용을 비교 → 설계 문서 §4 확정.
+def step_model_comparison(workdir: Path) -> tuple[StepResult, list[str]]:
+    """[6] 모델 비교: 같은 fixture 통계를 활성 provider의 tier들로 판정시켜
+    규칙 정확도·토큰·비용을 비교 → 설계 문서 §4 모델 전략 판정.
 
-    키가 오면 채울 내용:
-      for model in (sonnet, haiku, opus):
-          ConventionLearner(model=model).learn(extract_stats(workdir))
-      → 정답지 대비 정확도 + usage 토큰 비용 표 생성
+    anthropic이면 haiku/sonnet/opus(§4의 판단 대상)로 돈다 — 단 실제
+    ANTHROPIC_API_KEY가 있어야 한다. 현재처럼 provider가 openai면 openai tier를
+    비교하고, anthropic 판정은 키가 필요하다는 사실을 채점표에 남긴다.
+    픽스처는 통제된(깨끗한) 입력이라 tier 간 차이는 작게 나오는 게 정상 —
+    지저분한 실제 데이터의 tier 차이는 score_real_repos.py가 잰다.
     """
+    name = "[6] 모델 비교"
     if not HAS_KEY:
-        return StepResult("[6] 모델 비교", "skipped", f"{KEY_ENV} 없음")
-    return StepResult("[6] 모델 비교", "skipped", "스켈레톤 — 아직 미구현 (키 확보 후 작업)")
+        return StepResult(name, "skipped", f"{KEY_ENV} 없음"), []
+
+    tiers = learn_scoring.MODEL_TIERS.get(PROVIDER, [])
+    if not tiers:
+        return StepResult(name, "skipped", f"provider {PROVIDER}: tier 목록 미정의"), []
+
+    expected = _fixture_expected()
+    stats = extract_stats(FIXTURE)  # 깨끗한 픽스처 ([5]와 동일한 이유)
+    scaled, factor = learn_scoring.scale_to_gate(stats, MIN_RULE_OCCURRENCES)
+
+    cost = learn_scoring.CostLog()
+    rows: list[tuple[str, str, learn_scoring.Score | None, learn_scoring.LearnRun | None, str]] = []
+    for label, model in tiers:
+        try:
+            run = learn_scoring.learn_with_usage(scaled, model=model)
+            score = learn_scoring.score_rules(run.rules, expected)
+            cost.add(f"{label} ({model})", run)
+            rows.append((label, model, score, run, ""))
+        except Exception as exc:
+            rows.append((label, model, None, None, str(exc)))
+
+    errored = [r for r in rows if r[4]]
+    summary = ", ".join(
+        f"{label} recall {score.recall:.0%}" if score else f"{label} 실패"
+        for label, _, score, _, _ in rows
+    )
+    caveat = ""
+    if PROVIDER != "anthropic":
+        caveat = " · 설계 §4(haiku/sonnet/opus)는 실제 ANTHROPIC_API_KEY 필요"
+    total_usd = cost.total_usd
+    detail = (
+        f"{PROVIDER} {len(tiers)} tier — {summary} "
+        f"({cost.total_tokens} tok"
+        + (f", ≈${total_usd:.4f}" if total_usd is not None else "")
+        + ")"
+        + caveat
+    )
+
+    section = [
+        "## [6] 모델 비교 상세",
+        "",
+        f"- provider: {PROVIDER} / 통계 스케일 ×{factor} / 정답지 fixture ({len(expected)}개)",
+    ]
+    if PROVIDER != "anthropic":
+        section.append(
+            "- ⚠️ 설계 문서 §4가 판정하려는 tier는 anthropic haiku/sonnet/opus다. "
+            "현재 활성 키가 openai뿐이라 openai tier로 대신 비교했다. "
+            "§4를 실제로 확정하려면 유효한 ANTHROPIC_API_KEY로 재실행해야 한다."
+        )
+    section += [
+        "",
+        "| tier | 모델 | recall | precision | in tok | out tok | ≈USD | 놓침 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for label, model, score, run, err in rows:
+        if score is None:
+            section.append(f"| {label} | `{model}` | — | — | — | — | — | 실패: {err} |")
+            continue
+        usd = run.cost_usd
+        section.append(
+            f"| {label} | `{model}` | {score.recall:.0%} | {score.precision:.0%} | "
+            f"{run.input_tokens} | {run.output_tokens} | "
+            + (f"${usd:.4f}" if usd is not None else "—")
+            + f" | {score.missed or '없음'} |"
+        )
+    section += ["", *cost.as_markdown()]
+
+    status = "fail" if errored else "pass"
+    return StepResult(name, status, detail), section
 
 
 def step_review_llm_e2e(workdir: Path) -> StepResult:
@@ -356,7 +532,9 @@ def step_review_llm_e2e(workdir: Path) -> StepResult:
 
 # ------------------------------------------------------------------ 채점표
 
-def write_scorecard(steps: list[StepResult], metrics: dict) -> Path:
+def write_scorecard(
+    steps: list[StepResult], metrics: dict, extra_sections: list[list[str]]
+) -> Path:
     RESULTS.mkdir(exist_ok=True)
     now = datetime.now(timezone.utc)
     path = RESULTS / f"scorecard-{now.strftime('%Y%m%d-%H%M%S')}.md"
@@ -384,11 +562,26 @@ def write_scorecard(steps: list[StepResult], metrics: dict) -> Path:
         f"- missed: {metrics['missed'] or '없음'}",
         f"- false positives: {metrics['false_positives'] or '없음'}",
     ]
+    for section in extra_sections:
+        lines += ["", *section]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
+def _force_utf8_streams() -> None:
+    """cp949 등 비-UTF-8 콘솔에서도 이모지/기호 출력이 깨지지 않게 스트림을 UTF-8로."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    _force_utf8_streams()
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--keep-workdir", action="store_true", help="검증용 임시 레포를 남겨둠")
     args = ap.parse_args()
@@ -397,20 +590,23 @@ def main() -> int:
     workdir = setup_workdir(args.keep_workdir)
     try:
         step1, metrics = step_checker_injection(workdir)
+        learn_step, learn_section = step_learn_quality(workdir)
+        model_step, model_section = step_model_comparison(workdir)
         steps = [
             step1,
             step_cli_smoke(workdir),
             step_scope_isolation(workdir),
             step_store_format_equivalence(workdir),
-            step_learn_quality(workdir),
-            step_model_comparison(workdir),
+            learn_step,
+            model_step,
             step_review_llm_e2e(workdir),
         ]
+        extra_sections = [s for s in (learn_section, model_section) if s]
     finally:
         if not args.keep_workdir:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    scorecard = write_scorecard(steps, metrics)
+    scorecard = write_scorecard(steps, metrics, extra_sections)
     print()
     for s in steps:
         icon = {"pass": "✅", "fail": "❌", "skipped": "⏭️"}[s.status]
