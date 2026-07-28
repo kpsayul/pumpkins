@@ -209,14 +209,15 @@ learn의 실제 토큰 사용량(측정):
      상태**가 해소됨. 실측: spdlog PR #2667에서 사람이 직접 쓴 규칙(*"조건부 컴파일로 갈린 공개 API에서
      같은 이름이 한쪽은 함수, 다른 쪽은 타입이면 안 된다"*)을 LLM이 정확히 적발하고 rule_id를 인용함
    - 남은 것(후속): casing 자동 rename 제안, `confidence` 기반 톤 전환, LLM 지적의 줄 번호 정확도
-3. 🟡 **자기 검증 (하네스 구축됨 — 키 필요 단계는 스켈레톤 대기)** —
+3. 🟢 **자기 검증 (하네스 구축됨 — [5]/[6] 및 실제 리포 채점 구현됨)** —
    [verification/run_verification.py](../verification/run_verification.py)가 전체 flow를 실행:
    - ✅ 주입 검증(Track A, 키 불필요): 통제 fixture에 위반 5건+무해 3건 주입 → recall/precision 채점 → `verification/results/` 채점표. 현재 **recall 100% / precision 100%**
    - ✅ CLI 스모크: `--no-llm` 전체 파이프라인 리포트 확인
    - ✅ **scope 격리 검증**: `legacy/`에 같은 위반을 심고 `exclude_paths`로 제외 → legacy는 침묵하고 src의 5건은 유지되는지. 뒤쪽 조건이 없으면 scope는 그냥 체커를 끄는 스위치일 뿐이라 둘 다 확인함
    - ✅ **저장소 포맷 등가성**: 레거시 `conventions.yml`과 `pumpkins/` 저장소가 같은 지적을 내는지 + `candidates/`가 리뷰에 적용되지 않는지. 픽스처를 일부러 레거시로 남겨 뒀으므로 [1]~[3]이 옛 경로를, [4]가 신규 경로를 덮는다
-   - ⏭️ learn 품질 / 모델 비교(§4 확정용) / 리뷰 LLM e2e: **키 필요 — 자동 skip되는 스켈레톤**, 키 확보 후 각 함수 내부만 채우면 됨 (해야 할 일이 docstring에 명시돼 있음)
-   - **한계 (§5.5가 증명함): 픽스처 100%는 제품 품질을 보장하지 않는다.** 실제 리포 두 곳에서 규칙이 틀렸는데도 이 하네스는 만점이었다. 다음 우선순위는 오픈소스 리포를 하네스에 넣어 **정답이 공개된 스타일 가이드**(fmt=snake_case, googletest=Google style)와 학습 결과를 비교하는 것
+   - ✅ **learn 품질([5]) / 모델 비교([6]) (구현됨, 키 필요)**: fixture 통계로 `learn`을 돌려 채택 규칙을 정답지와 (category,facet,value)로 대조. 픽스처가 게이트(occ 20)보다 작아 분포 보존 스케일; 같은 입력 3회 샘플로 재현성(flap)까지 잰다. 모델 비교는 활성 provider의 3 tier(anthropic `haiku/sonnet/opus` 또는 openai `gpt-4o-mini/gpt-4o/gpt-4.1`)로 정확도·토큰·비용. 리뷰 LLM e2e([7])만 스켈레톤(범위 밖). 토큰 사용량은 `ConventionLearner.learn_with_usage()`가 공개 API로 노출한다
+   - ✅ **정답 공개 리포로 learn 채점 (구현됨)** — [score_real_repos.py](../verification/score_real_repos.py): fmt/googletest/Catch2를 얕게 클론(작업 디렉터리)해 각 리포의 문서화된 스타일을 정답지로 채점. **실측: fmt 100% / googletest 67%(문서화된 멤버 트레일링 `_`가 관측 71%로 게이트 미달 → 놓침) / Catch2 0%(관행이 모두 85% 미만).** 결정적으로 **게이트 미달 규칙은 모델 tier를 올려도(gpt-4.1) 회복되지 않는다 — 병목은 모델 지능이 아니라 게이트+관측 커버리지** (§4.1의 '숨은 쪼개짐 판정'은 추론 과제라 상위 모델이 이기지만, 이쪽 '게이트 미달 규칙 채택'은 성격이 달라 모델을 올려도 안 산다). 이것이 §5.5가 말한 "픽스처 100%인데 실제서 틀림"의 정체
+   - **한계 (§5.5): 픽스처 100%는 제품 품질을 보장하지 않는다.** 위 실제 리포 채점이 그 간극을 수치로 드러낸다 ([verification-plan.md](verification-plan.md) "픽스처 검증의 한계")
 4. 통과하면 GitHub PR 코멘트 봇 + 방안 C(리뷰 이력 마이닝) 검토.
 
 ### 다음에 할 일 (실측이 가리키는 순서)

@@ -141,18 +141,27 @@ python verification/score_real_repos.py --clone-dir DIR --keep-clones  # 재클�
 벌하지 않는다). 채점표는 규칙마다 **관측 커버리지**와 **게이트(occurrences ≥ 20 AND
 coverage ≥ 85%) 통과 여부**를 같이 실어, 왜 채택/기각됐는지를 스스로 설명한다.
 
-이 셋은 실측에서 확인된 세 가지 서로 다른 상황을 대표한다:
+이 셋은 실측에서 확인된 세 가지 서로 다른 상황을 대표한다 (openai gpt-4o-mini/gpt-4o/gpt-4.1 3개 모델 실행 기준):
 
-- **fmt** — 깨끗한 snake_case. learn이 재현해야 정상(양성 케이스).
-- **googletest** — 함수/타입 UpperCamel은 게이트를 넘지만, 문서가 요구하는 멤버 트레일링
-  `_`는 공개 struct 멤버가 섞여 관측 ~71%로 게이트에 못 미친다 → learn이 **문서화된
-  규칙을 놓치는** 것이 관측된다(recall 손실). 이게 "픽스처 100%인데 실제에서 틀림"의 정체.
-- **Catch2** — 관행(m_/lowerCamel/UpperCamel)이 모두 85% 미만 → learn이 **안전하게 기각**하는
-  것이 정답. 지저분한 리포에서 오채택을 만들지 않는지 보는 오염 내구성 축.
+- **fmt — recall 100%** (전 모델). 깨끗한 snake_case를 learn이 그대로 재현(양성 케이스).
+- **googletest — recall 67%** (전 모델). 함수/타입 UpperCamel은 게이트를 넘지만, 문서가
+  요구하는 멤버 트레일링 `_`는 공개 struct 멤버가 섞여 관측 71%로 게이트에 못 미친다 →
+  learn이 **문서화된 규칙을 놓치는** 것이 관측된다(recall 손실). 이게 "픽스처 100%인데
+  실제에서 틀림"의 정체.
+- **Catch2 — recall 0~33%** (실행마다 흔들림). 관행(m_/lowerCamel/UpperCamel)이 모두 85%
+  미만 → learn이 **안전하게 기각**하는 것이 정답(오염 내구성 축). 드물게 LLM이 커버리지를
+  과대보고해 `m_`를 채택하기도 하는데(관측 60%인데 통과), 이는 게이트가 관측이 아니라
+  **LLM이 보고한 coverage를 신뢰**하기 때문 — 채점표의 관측 커버리지 표가 이 괴리를 드러낸다.
+
+**결정적 관찰: 모델 tier를 올려도(gpt-4o-mini → gpt-4.1) 놓친 규칙이 회복되지 않는다.**
+googletest 멤버 `_`는 세 모델 모두 놓쳤다 — 병목이 모델 지능이 아니라 **게이트 + 관측
+커버리지**임을 뜻한다. learn의 실제 실패는 더 비싼 모델로 사는 게 아니라, 게이트가 무엇을
+어떻게 재는지(예: 문서화된 규칙이 공개 struct 멤버로 희석되는 문제)를 고쳐야 사는 것.
 
 `run_verification.py`의 [5]/[6]도 스켈레톤에서 구현으로 바꿨다. 다만 픽스처는 식별자가
 게이트보다 적어(6/6/2 vs 20), 통계를 분포 보존한 채 게이트 위로 스케일해 LLM의 패턴
-식별력을 잰다 — 픽스처의 이 작음 자체가 통제 환경의 한계를 재확인한다. [6]의 모델 tier
-비교(설계 §4 haiku/sonnet/opus)는 활성 provider가 anthropic이고 유효한
-`ANTHROPIC_API_KEY`가 있을 때만 그 세 tier로 돈다(그 외 provider면 해당 provider의
-tier로 대신 비교하고 그 사실을 채점표에 남긴다).
+식별력을 잰다 — 픽스처의 이 작음 자체가 통제 환경의 한계를 재확인한다. [5]는 같은 입력을
+3회 반복해 재현성(flap)까지 잰다(측정지표 표의 재현성 항목). [6]의 모델 비교는 **활성
+provider의 3 tier**로 돈다 — anthropic이면 설계 §4의 원안인 `haiku/sonnet/opus`, openai면
+그에 대응하는 `gpt-4o-mini/gpt-4o/gpt-4.1`. 토큰/비용은 채점표에 기록하며, 사용량은
+`ConventionLearner.learn_with_usage()` 공개 API로 얻는다.

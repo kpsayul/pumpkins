@@ -21,6 +21,7 @@ each SDK reads its own API key from the environment.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Literal
 
 import yaml
@@ -166,6 +167,24 @@ class LearnResult(BaseModel):
     split_hypotheses: list[SplitHypothesis] = Field(default_factory=list)
 
 
+@dataclass
+class LearnOutcome:
+    """learn 한 번의 결과와 그 호출의 토큰 사용량.
+
+    `learn()`은 규칙만 돌려주지만(하위호환), 검증 하네스처럼 호출 비용을 기록해야 하는
+    쪽은 사용량이 필요하다. 예전에는 usage가 로그로만 남아 하네스가 클라이언트를 직접
+    호출해야 했다 — `learn_with_usage()`가 이를 공개 API로 노출한다.
+    """
+
+    result: LearnResult
+    input_tokens: int
+    output_tokens: int
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+
 def apply_threshold_gate(result: LearnResult) -> LearnResult:
     """Code-side enforcement of the numeric rule definition (design doc §3-(2)).
 
@@ -202,6 +221,17 @@ class ConventionLearner:
     def learn(
         self, stats: list[CategoryStats], scan_scope: RuleScope | None = None
     ) -> LearnResult:
+        """채택/기각 규칙만 필요할 때. 토큰 사용량이 필요하면 learn_with_usage()."""
+        return self.learn_with_usage(stats, scan_scope).result
+
+    def learn_with_usage(
+        self, stats: list[CategoryStats], scan_scope: RuleScope | None = None
+    ) -> LearnOutcome:
+        """learn()과 같되 그 호출의 토큰 사용량을 함께 돌려준다.
+
+        사용량은 예전에 로그로만 남았다 — 검증/비용 집계처럼 usage가 필요한 호출자가
+        provider 클라이언트를 직접 부르지 않아도 되도록 공개 API로 노출한다.
+        """
         parsed = self.client.parse(
             model=self.model,
             max_tokens=8000,
@@ -232,7 +262,11 @@ class ConventionLearner:
         scope = scan_scope or RuleScope()
         for rule in result.rules:
             rule.scope = scope.model_copy(deep=True)
-        return apply_threshold_gate(result)
+        return LearnOutcome(
+            result=apply_threshold_gate(result),
+            input_tokens=parsed.input_tokens,
+            output_tokens=parsed.output_tokens,
+        )
 
 
 # ----------------------------------------------------------------- rendering

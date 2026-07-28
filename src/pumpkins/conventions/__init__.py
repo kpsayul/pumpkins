@@ -11,6 +11,7 @@ from pumpkins.conventions.extractor import (
 from pumpkins.conventions.learner import (
     ConventionLearner,
     ConventionRule,
+    LearnOutcome,
     LearnResult,
     RejectedCandidate,
     SplitHypothesis,

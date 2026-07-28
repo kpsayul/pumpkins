@@ -479,7 +479,7 @@ def step_model_comparison(workdir: Path) -> tuple[StepResult, list[str]]:
     )
     caveat = ""
     if PROVIDER != "anthropic":
-        caveat = " · 설계 §4(haiku/sonnet/opus)는 실제 ANTHROPIC_API_KEY 필요"
+        caveat = " · §4 원안은 anthropic haiku/sonnet/opus (동종 비교)"
     total_usd = cost.total_usd
     detail = (
         f"{PROVIDER} {len(tiers)} tier — {summary} "
@@ -496,9 +496,9 @@ def step_model_comparison(workdir: Path) -> tuple[StepResult, list[str]]:
     ]
     if PROVIDER != "anthropic":
         section.append(
-            "- ⚠️ 설계 문서 §4가 판정하려는 tier는 anthropic haiku/sonnet/opus다. "
-            "현재 활성 키가 openai뿐이라 openai tier로 대신 비교했다. "
-            "§4를 실제로 확정하려면 유효한 ANTHROPIC_API_KEY로 재실행해야 한다."
+            f"- 참고: 설계 문서 §4의 원래 판단 대상은 anthropic haiku/sonnet/opus다. "
+            f"활성 provider가 {PROVIDER}라 그에 대응하는 {PROVIDER} 3개 모델로 동종 비교했다. "
+            "anthropic tier를 직접 재려면 유효한 ANTHROPIC_API_KEY로 재실행하면 된다."
         )
     section += [
         "",

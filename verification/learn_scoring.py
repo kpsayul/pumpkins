@@ -4,12 +4,12 @@
 그 파이프라인을 *채점*하는 도구다. run_verification.py의 [5]/[6]과
 score_real_repos.py가 함께 쓴다.
 
-제품 API가 주지 않는 것 두 가지를 여기서 메운다 (src/pumpkins는 건드리지 않는다):
+채점에 필요하지만 통계 데이터만으로는 안 되는 것을 여기서 다룬다:
 
-  * learn 호출당 토큰 사용량 — `ConventionLearner.learn()`은 이를 로그로만 남기고
-    반환하지 않는다. 그래서 learn_with_usage()가 provider 클라이언트를 직접 호출해
-    (learner와 동일한 프롬프트로) ParsedResult의 input/output 토큰을 회수한다.
-    → 이는 API 공백이다. `learn()`이 사용량을 반환하면 이 우회는 사라진다. (보고 참조)
+  * learn 호출당 토큰 사용량 — 제품이 `ConventionLearner.learn_with_usage()`로 노출한다.
+    여기 learn_with_usage()는 그 공개 API를 재시도로 감싸 채점용 LearnRun으로 포장할 뿐,
+    프롬프트·게이트는 제품 코드가 소유한다. (예전엔 usage가 로그로만 남아 하네스가
+    클라이언트를 직접 호출했으나, 그 API 공백은 메워졌다.)
   * 우리가 합성한 통계로 learn을 돌리는 길 — extract_stats의 출력은 그냥 데이터라
     게이트를 넘기도록 여기서 스케일한다 (픽스처가 게이트보다 작기 때문, 아래 참조).
 """
@@ -165,9 +165,9 @@ def scale_to_gate(stats, min_occurrences: int):
 
 # ------------------------------------------------------------------- 모델·비용
 
-# [6] 모델 비교의 tier 목록 — provider별. anthropic 세 tier가 설계 문서 §4의
-# 판단 대상(Sonnet이 Opus 대비 손실 없으면 Sonnet 확정)이다. 활성 provider의
-# 목록만 실제로 돌아간다 — anthropic tier를 재려면 실제 ANTHROPIC_API_KEY가 필요.
+# [6] 모델 비교의 tier 목록 — provider별로 저가→중간→강 3단. 활성 provider의 목록만
+# 실제로 돈다. anthropic 세 tier(haiku/sonnet/opus)가 설계 문서 §4의 원래 판단
+# 대상이고, openai 세 tier(gpt-4o-mini/gpt-4o/gpt-4.1)는 그에 대응하는 동종 비교다.
 MODEL_TIERS = {
     "anthropic": [
         ("haiku", "claude-haiku-4-5-20251001"),
@@ -177,6 +177,7 @@ MODEL_TIERS = {
     "openai": [
         ("gpt-4o-mini", "gpt-4o-mini"),
         ("gpt-4o", "gpt-4o"),
+        ("gpt-4.1", "gpt-4.1"),
     ],
 }
 
@@ -186,6 +187,10 @@ MODEL_TIERS = {
 PRICE_PER_MTOK = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
+    "o3-mini": (1.10, 4.40),
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     "claude-sonnet-5": (3.00, 15.00),
     "claude-opus-4-8": (15.00, 75.00),
@@ -221,54 +226,33 @@ class LearnRun:
 
 
 def learn_with_usage(stats, model: str | None = None, attempts: int = 2) -> LearnRun:
-    """learn을 돌리되 토큰 사용량까지 회수한다.
+    """learn을 돌리되 토큰 사용량까지 회수해 채점용 LearnRun으로 포장한다.
 
-    `ConventionLearner.learn()`은 사용량을 반환하지 않으므로, provider 클라이언트를
-    learner와 *동일한 프롬프트/스키마/온도*로 직접 호출한다. 프롬프트 상수를 재사용해
-    (복제하지 않고) learner와의 드리프트를 막는다 — 그래서 learner의 비공개 심볼을
-    가져온다. 이 결합은 `learn()`이 사용량을 반환하면 없어진다.
+    `ConventionLearner.learn_with_usage()` 공개 API를 그대로 쓴다 — 규칙·게이트·프롬프트는
+    제품 코드가 소유하고, 여기서는 채점에 필요한 usage만 받아 나른다.
 
     learn 온도는 제품 설정상 기본값(openai=1.0)이라 드물게 응답이 max_tokens에 걸려
     structured 파싱이 실패한다(고온도 과생성). 채점이 그 한 번의 흔들림에 좌우되지
-    않도록 `attempts`회까지 재시도한다 — 이는 하네스의 안정화이지 제품 동작 변경이
-    아니다(온도/토큰 한도는 src 그대로 둔다).
+    않도록 `attempts`회까지 재시도한다 — 하네스의 안정화이지 제품 동작 변경이 아니다.
     """
-    from pumpkins.config import (
-        LEARN_TEMPERATURE,
-        MIN_RULE_CONSISTENCY,
-        MIN_RULE_OCCURRENCES,
-        default_learn_model,
-    )
-    from pumpkins.conventions import LearnResult, apply_threshold_gate
-    from pumpkins.conventions.learner import _SYSTEM_PROMPT_TEMPLATE, _render_stats_text
-    from pumpkins.llm.provider import get_client
+    from pumpkins.config import default_learn_model
+    from pumpkins.conventions import ConventionLearner
 
     model = model or default_learn_model()
-    client = get_client()
-    system = _SYSTEM_PROMPT_TEMPLATE.format(
-        min_occ=MIN_RULE_OCCURRENCES, min_cons=MIN_RULE_CONSISTENCY
-    )
-    user = _render_stats_text(stats)
+    learner = ConventionLearner(model=model)
 
     last_exc: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
-            parsed = client.parse(
-                model=model, max_tokens=8000, system=system, user=user,
-                schema=LearnResult, temperature=LEARN_TEMPERATURE,
-            )
+            outcome = learner.learn_with_usage(stats)
         except Exception as exc:  # 고온도 과생성으로 인한 length-limit 파싱 실패 등
             last_exc = exc
             continue
-        if parsed.parsed is None:
-            last_exc = RuntimeError(f"{model}: 파싱 가능한 규칙 출력이 없음")
-            continue
-        gated = apply_threshold_gate(parsed.parsed)
         return LearnRun(
             model=model,
-            rules=gated.rules,
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
+            rules=outcome.result.rules,
+            input_tokens=outcome.input_tokens,
+            output_tokens=outcome.output_tokens,
         )
     raise RuntimeError(f"{model}: learn 호출이 {attempts}회 모두 실패 — {last_exc}")
 
