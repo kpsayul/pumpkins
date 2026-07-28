@@ -239,7 +239,12 @@ def learn_with_usage(stats, model: str | None = None, attempts: int = 2) -> Lear
     from pumpkins.conventions import ConventionLearner
 
     model = model or default_learn_model()
-    learner = ConventionLearner(model=model)
+    # escalate=False keeps every call on `model`: this harness compares tiers in
+    # isolation, so a "gpt-4o-mini" run must not secretly spend gpt-4o tokens on
+    # split adjudication. Adopted rules (what recall/precision score) are
+    # unaffected — a split is rejected either way; only cost attribution would be
+    # muddied. The two-stage escalation is a production default, not a measurement one.
+    learner = ConventionLearner(model=model, escalate=False)
 
     last_exc: Exception | None = None
     for _ in range(max(1, attempts)):

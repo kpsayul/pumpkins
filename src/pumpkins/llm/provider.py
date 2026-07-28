@@ -7,7 +7,7 @@ SDKs; everything else (prompts, schemas, threshold gates) stays provider-free.
 
 `temperature` is the one sampling knob exposed, because it is the one that
 changed observed behaviour: with the API default the same diff produced 0
-findings on one run and 1 on the next (docs/architecture.md, Evidence). Passing
+findings on one run and 1 on the next (docs/design-history.md, Evidence). Passing
 None omits the parameter so the provider's own default applies.
 
 Auth: each SDK reads its own key from the environment (ANTHROPIC_API_KEY /

@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from pumpkins.config import LEARN_SKIP_DIRS, LEARN_TEST_DIRS
 from pumpkins.conventions.scope import normalize_path, path_matches
-from pumpkins.languages import cpp, cpp_extensions
+from pumpkins.languages import cpp_extensions, cpp_parser
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +53,11 @@ CATEGORIES = (
     "class_type",
 )
 
-# C++ syntax lives in languages/cpp.py; re-exported here because checker.py and
+# C++ syntax lives in languages/cpp_parser.py; re-exported here because checker.py and
 # the tests speak this vocabulary. This module's own job is statistics.
-sanitize_line = cpp.sanitize_line
-strip_template_params = cpp.strip_template_params
-match_identifiers = cpp.match_identifiers
+sanitize_line = cpp_parser.sanitize_line
+strip_template_params = cpp_parser.strip_template_params
+match_identifiers = cpp_parser.match_identifiers
 
 
 class CategoryStats(BaseModel):
@@ -197,7 +197,7 @@ def _scan_file(path: Path) -> Iterator[tuple[str, str]]:
     except OSError as exc:
         log.debug("skipping unreadable file %s: %s", path, exc)
         return
-    yield from cpp.scan(text)
+    yield from cpp_parser.scan(text)
 
 
 def select_files(

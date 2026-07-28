@@ -3,6 +3,10 @@
 > 상태: **구현됨** (2026-07-19). 결제 이슈로 Claude 대신 GPT를 쓸 수 있게, 그리고
 > 사람마다 자기 키를 안전하게 주입할 수 있게 하기 위한 설계. 어댑터는
 > `src/pumpkins/llm/provider.py`, 프로바이더/모델/키 매핑은 `config.py`에 있다.
+>
+> 이건 **설계 기록**이다 — §1~3은 구현 *전* 제안(근거 보존용, "미구현" 표시가 남아 있음),
+> §4·§6이 실제로 만들어진 결과다. **현재 동작의 기준은 §6과 코드**이며, 현재 구조 요약은
+> [architecture.md](architecture.md).
 
 ## 1. 배경
 
@@ -11,9 +15,9 @@
   - [`conventions/learner.py`](../src/pumpkins/conventions/learner.py) — Learn L2 규칙 판정
 - 두 곳 다 `anthropic.Anthropic()` + `client.messages.parse(system=…, messages=…, output_format=PydanticModel)` 패턴.
 - 키는 코드·설정에 두지 않고 `ANTHROPIC_API_KEY` 환경변수에서만 읽는 설계
-  ([config.py](../src/pumpkins/config.py), architecture.md §Stage 3). 이 원칙은 유지한다.
-- `.env`·`.envrc`는 이미 `.gitignore`에 등록됨. 단 **자동 로드 코드는 없음**(`python-dotenv` 미사용)
-  — 지금은 셸에서 `export`로 넣어야만 동작.
+  ([config.py](../src/pumpkins/config.py), design-history.md §Stage 3). 이 원칙은 유지한다.
+- (설계 당시) `.env`·`.envrc`는 `.gitignore`에 등록돼 있었지만 **자동 로드 코드가 없어**
+  셸 `export`로만 동작했다 — 이 설계로 `python-dotenv` 자동 로드가 추가됐다(§4·§6).
 
 ## 2. 목표
 
@@ -124,7 +128,7 @@ def get_client(provider: str | None = None) -> LlmClient:
 - [x] `.env.example` (신규 커밋).
 - [x] `verification/run_verification.py` — 키 체크 일반화 + `.env` 로드.
 - [x] README §설정 — `.env` 복사 + `LLM_PROVIDER` 안내로 갱신.
-- [x] architecture.md §Stage 3 / 실패처리 표 — 프로바이더 일반화 반영.
+- [x] design-history.md §Stage 3 / 실패처리 표 — 프로바이더 일반화 반영.
 - [x] 실키 테스트 (2026-07-19) — OpenAI 구조화 출력이 중첩 스키마
       (`_LlmReview`/`LearnResult`, `Field(ge/le)` 제약 포함)를 통과함을 확인.
       fixture 대상 `pumpkins learn` e2e도 정상 (gpt-4o-mini, in=1012/out=232 토큰;

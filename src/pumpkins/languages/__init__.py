@@ -24,7 +24,7 @@ import logging
 from pathlib import Path
 
 from pumpkins.config import PUMPKINS_DIRNAME
-from pumpkins.languages import cpp
+from pumpkins.languages import cpp_parser
 
 log = logging.getLogger(__name__)
 
@@ -63,8 +63,8 @@ def _overrides(repo: Path, language: str) -> tuple[set[str], set[str]]:
 def cpp_extensions(repo: Path | None = None) -> frozenset[str]:
     """Extensions to treat as C++ in this repo."""
     if repo is None:
-        return cpp.EXTENSIONS
-    added, removed = _overrides(repo, cpp.NAME)
+        return cpp_parser.EXTENSIONS
+    added, removed = _overrides(repo, cpp_parser.NAME)
     if added or removed:
         log.info(
             "%s/%s: C++ extensions %s%s",
@@ -73,7 +73,7 @@ def cpp_extensions(repo: Path | None = None) -> frozenset[str]:
             f"+{sorted(added)}" if added else "",
             f" -{sorted(removed)}" if removed else "",
         )
-    return frozenset((set(cpp.EXTENSIONS) | added) - removed)
+    return frozenset((set(cpp_parser.EXTENSIONS) | added) - removed)
 
 
 def cpp_tu_extensions(repo: Path | None = None) -> frozenset[str]:
@@ -84,6 +84,6 @@ def cpp_tu_extensions(repo: Path | None = None) -> frozenset[str]:
     set is only ever narrowed by the repo, never widened by accident.
     """
     if repo is None:
-        return cpp.TU_EXTENSIONS
-    _, removed = _overrides(repo, cpp.NAME)
-    return frozenset(set(cpp.TU_EXTENSIONS) - removed)
+        return cpp_parser.TU_EXTENSIONS
+    _, removed = _overrides(repo, cpp_parser.NAME)
+    return frozenset(set(cpp_parser.TU_EXTENSIONS) - removed)

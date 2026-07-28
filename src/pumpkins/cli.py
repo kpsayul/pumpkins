@@ -248,8 +248,25 @@ def build_learn_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--model",
         default=default_learn_model(),
-        help=f"rule judgment model (default for LLM_PROVIDER={current_provider()}: "
+        help=f"stage-1 rule judgment model (default for LLM_PROVIDER={current_provider()}: "
         f"{default_learn_model()})",
+    )
+    p.add_argument(
+        "--no-escalate",
+        action="store_true",
+        help="do not escalate hidden-split boundary naming to the stronger model "
+        f"({default_review_model()}). By default a detected split is judged by "
+        "that model automatically; this keeps everything on --model instead",
+    )
+    p.add_argument(
+        "--infer",
+        action="store_true",
+        help="have the model INFER this repo's own (local) conventions from the "
+        "code, with NO facet template — the structural / ownership / layout rules "
+        f"the statistics path cannot express. Inferred rules are guesses, so they "
+        f"land in {PUMPKINS_DIRNAME}/candidates/ as unverified facet=other rules "
+        f"for human approval. Opt-in because it sends source code, so it costs "
+        f"more tokens (model: {default_review_model()})",
     )
     p.add_argument(
         "--no-llm",
@@ -294,10 +311,15 @@ def _format_reconciliation(root, rec, written, accept_all: bool) -> str:
     if rec.new_candidates:
         lines.append(f"신규 {len(rec.new_candidates)}건 → {root.name}/{target}/")
         for rule in rec.new_candidates:
-            lines.append(
-                f"  + {rule.id}  —  {rule.description} "
-                f"({rule.coverage:.0%}, {rule.occurrences}개)"
+            # facet=other candidates (AI-inferred rules) have no measured
+            # coverage — showing "0%, 0개" would misrepresent them as failed
+            # statistics rather than unverified guesses.
+            backing = (
+                "AI 추측 · 미검증"
+                if rule.facet == "other"
+                else f"{rule.coverage:.0%}, {rule.occurrences}개"
             )
+            lines.append(f"  + {rule.id}  —  {rule.description} ({backing})")
     if rec.refreshed:
         lines.append(f"근거 수치만 갱신 {len(rec.refreshed)}건 (결정과 이유는 보존)")
         for rule in rec.refreshed:
@@ -339,20 +361,37 @@ def _format_reconciliation(root, rec, written, accept_all: bool) -> str:
     return "\n".join(lines)
 
 
-def _has_split_signal(stats) -> bool:
-    """Whether any category looks like two groups rather than one convention."""
-    from pumpkins.config import MIN_RULE_CONSISTENCY
-    from pumpkins.conventions import detect_split_signal
+def _format_inference(report) -> str:
+    """AI-inferred rules after measuring each against the repo.
 
-    return any(
-        detect_split_signal(counts, total, MIN_RULE_CONSISTENCY)
-        for s in stats
-        for counts, total in (
-            (s.prefix_counts, s.total),
-            (s.suffix_counts, s.total),
-            (s.casing_counts, s.casing_informative),
-        )
-    )
+    Three buckets: verified (coverage passed the gate — a naming rule now
+    enforced deterministically), rejected (a wrong guess, filtered by its
+    measured coverage), and unverified (no runnable check — an LLM-judged guess).
+    """
+    n = len(report.verified) + len(report.rejected) + len(report.unverified)
+    lines = [
+        "",
+        f"AI 추측 규칙 {n}건 — 코드로 검증한 결과 "
+        f"(검증됨 {len(report.verified)} · 기각 {len(report.rejected)} · "
+        f"미검증 {len(report.unverified)}):",
+    ]
+    if report.verified:
+        lines.append("  검증됨 (레포가 뒷받침 — 게이트 통과):")
+        for rule in report.verified:
+            enforce = "결정적 검사" if rule.facet != "other" else "LLM 판단"
+            lines.append(
+                f"    ✓ {rule.description}  ({rule.coverage:.0%}, {rule.occurrences}개 · {enforce})"
+            )
+    if report.rejected:
+        lines.append("  기각 (틀린 추측 — 레포가 뒷받침 못함):")
+        for desc, reason in report.rejected:
+            lines.append(f"    ✗ {desc}  — {reason}")
+    if report.unverified:
+        lines.append("  미검증 (기계로 잴 수 없어 사람 판단 — facet=other):")
+        for rule in report.unverified:
+            lines.append(f"    ~ {rule.description}")
+    lines.append("  검증됨·미검증만 candidates/에 저장됩니다 — 승인 전엔 리뷰에 영향 없음.")
+    return "\n".join(lines)
 
 
 def _format_split_hypotheses(hypotheses, root) -> str:
@@ -384,6 +423,7 @@ def run_learn(argv: list[str]) -> int:
     # path never pays for pyyaml/provider-SDK imports it doesn't use.
     from pumpkins.conventions import (
         ConventionLearner,
+        RuleInferrer,
         RuleScope,
         apply,
         extract_stats,
@@ -391,6 +431,7 @@ def run_learn(argv: list[str]) -> int:
         reconcile,
         render_stats_yaml,
         select_files,
+        verify_inferred,
         write_scan_report,
     )
 
@@ -428,28 +469,39 @@ def run_learn(argv: list[str]) -> int:
             )
             return 1
 
-        # Naming a hidden split is inference, not the structured classification
-        # the learn tier was chosen for (design doc §4). Measured on fmt: the
-        # cheap tier saw the directories and still answered "no structural
-        # distinction"; the review tier read the same input and said
-        # "test/gtest vs include/fmt". So say so rather than return a useless
-        # hypothesis — the cost decision is the user's.
-        if _has_split_signal(stats) and args.model == default_learn_model():
-            log.warning(
-                "숨은 쪼개짐이 감지됐습니다 — 이 판단은 learn 기본 모델(%s)로는 "
-                "대개 실패합니다. `--model %s`로 다시 돌리면 가르는 기준을 얻을 수 "
-                "있습니다.",
-                args.model, default_review_model(),
-            )
-
-        learner = ConventionLearner(model=args.model)
+        # Naming a hidden split is inference the cheap learn tier fails at
+        # (design doc §4.1: it read the directories and still said "no
+        # structural distinction"). The learner now escalates that one sub-task
+        # to the stronger model automatically — only when a split is detected and
+        # only over the split groups — instead of asking the user to re-run.
+        # --no-escalate keeps everything on --model for cost control.
+        learner = ConventionLearner(model=args.model, escalate=not args.no_escalate)
         result = learner.learn(stats, scan_scope)
+
+        # Statistics-path rules are already gated. The inference path (opt-in)
+        # adds guesses on TOP — no facet template, so it reaches conventions the
+        # statistics never do. Each guess is then MEASURED against the repo
+        # (verify_inferred): a verified naming rule becomes a real facet rule,
+        # a wrong guess is rejected by its coverage, and one with no runnable
+        # check stays an unverified facet=other guess. Inference is open,
+        # adoption is gated by the repo's own code.
+        proposed = list(result.rules)
+        report = None
+        if args.infer:
+            outcome = RuleInferrer().infer(
+                args.repo, args.include, args.exclude, args.include_tests
+            )
+            report = verify_inferred(
+                args.repo, outcome.rules, scan_scope,
+                args.include, args.exclude, args.include_tests,
+            )
+            proposed += report.verified + report.unverified
 
         # Merge into decisions already on disk rather than overwriting them.
         # Re-running learn must never cost the user their curation.
         root = args.out or (args.repo / PUMPKINS_DIRNAME)
         rec = reconcile(
-            load_all(root), result.rules, model=args.model, reconsider=args.reconsider
+            load_all(root), proposed, model=args.model, reconsider=args.reconsider
         )
         written = apply(root, rec, accept_all=args.accept_all)
         write_scan_report(
@@ -458,6 +510,8 @@ def run_learn(argv: list[str]) -> int:
             split_hypotheses=[s.model_dump() for s in result.split_hypotheses],
         )
         print(_format_reconciliation(root, rec, written, args.accept_all))
+        if report is not None:
+            print(_format_inference(report))
         if result.split_hypotheses:
             print(_format_split_hypotheses(result.split_hypotheses, root))
     except Exception as exc:  # surface a clean error instead of a traceback wall

@@ -8,7 +8,7 @@ threshold gate rejected a rule that was actually two rules.
 
 import pytest
 
-from pumpkins.languages import cpp, cpp_extensions, cpp_tu_extensions, settings_path
+from pumpkins.languages import cpp_extensions, cpp_parser, cpp_tu_extensions, settings_path
 
 
 def _settings(repo):
@@ -20,7 +20,7 @@ def _settings(repo):
 
 def _categories(text: str) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
-    for category, name in cpp.scan(text):
+    for category, name in cpp_parser.scan(text):
         out.setdefault(category, []).append(name)
     return out
 
@@ -81,7 +81,7 @@ def test_constants_are_not_split_by_visibility():
 def test_unknown_visibility_falls_back_to_the_generic_category():
     """A diff hunk may show no specifier. Guessing is how false positives are
     made, so the member stays in the generic bucket."""
-    assert cpp.match_identifiers("    int count;", True, None) == [
+    assert cpp_parser.match_identifiers("    int count;", True, None) == [
         ("member_variable", "count")
     ]
 

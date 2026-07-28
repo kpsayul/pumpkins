@@ -32,7 +32,7 @@ from pumpkins.conventions.extractor import (
 )
 from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.store import load_active_rules
-from pumpkins.languages import cpp
+from pumpkins.languages import cpp_parser
 from pumpkins.models import DetectorKind, DiffScope, Evidence, Finding, Severity
 
 log = logging.getLogger(__name__)
@@ -65,12 +65,12 @@ def _hunk_access(hunk) -> str | None:
     generic category rather than assumed.
     """
     for text in [hunk.section_header or ""] + [l.value for l in hunk]:
-        m = cpp.ACCESS_RE.match(text)
+        m = cpp_parser.ACCESS_RE.match(text)
         if m:
-            return cpp.normalize_access(m.group(1))
+            return cpp_parser.normalize_access(m.group(1))
     for text in [hunk.section_header or ""] + [l.value for l in hunk]:
         if re.search(r"\b(class|struct)\s+[A-Za-z_]", text):
-            return cpp.default_access(text)
+            return cpp_parser.default_access(text)
     return None
 
 _PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "m": 1, "k": 1, "s": 1, "g": 1}

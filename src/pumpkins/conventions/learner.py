@@ -32,6 +32,7 @@ from pumpkins.config import (
     MIN_RULE_CONSISTENCY,
     MIN_RULE_OCCURRENCES,
     default_learn_model,
+    default_reasoning_model,
 )
 from pumpkins.conventions.extractor import CategoryStats, detect_split_signal
 from pumpkins.conventions.scope import RuleScope
@@ -90,23 +91,44 @@ Report rejected candidates briefly with a reason. Be conservative: every wrong
 rule becomes a false review comment later, and false comments are what make
 users turn the tool off.
 
-Some categories are marked POSSIBLE HIDDEN SPLIT. That means the numbers are
-close to two groups rather than scattered, which often happens when one
-category actually holds two kinds of thing with two different conventions —
-measured together they average into a number that passes no threshold. For each
-such marker, look at the raw samples and report a `split_hypotheses` entry:
+Do NOT try to explain why a split category fails or where its boundary lies —
+that reasoning is done in a separate, stronger-model step. Just reject a split
+distribution as "not a rule" and move on.
+"""
 
-- `category` and `facet` copied exactly from the marker, nothing appended
-- what distinguishes the two groups, if you can tell. The directories listed
-  under each group are the most common answer: code from a bundled third-party
-  library, generated output, or test scaffolding follows its own conventions and
-  is not this project stating a rule. Other answers: interface types vs
-  implementations, static vs instance, public API vs internals.
-- `checkable: true` only when the distinguishing property is visible in the
+
+# Stage 2 — split adjudication, run on the strong (reasoning) tier only when a
+# hidden split was detected in code. Kept apart from the stage-1 prompt because
+# the two tasks have different natures (design doc §4.1): stage 1 is structured
+# classification the cheap tier handles; naming a split's boundary is inference
+# the cheap tier provably fails — measured on fmt, it read the directories and
+# still said "no structural distinction". So only this task escalates, and only
+# the split groups (not the whole stats) are sent, keeping the escalation cheap.
+_SPLIT_SYSTEM_PROMPT = """\
+You are told about identifier categories in a C++ repository whose naming
+distribution looks like TWO groups rather than one convention — close to
+bimodal, not scattered. This usually means one category holds two kinds of thing
+with two different conventions (e.g. a bundled test framework vs the project's
+own code, interface types vs implementations, public API vs internals), so
+measured together they average into a number that passes no threshold.
+
+Your only job is to name what separates the two groups, so a human can decide
+whether to split the category or write a scoped rule. For each POSSIBLE HIDDEN
+SPLIT block report one `split_hypotheses` entry:
+
+- `category` and `facet`: copied EXACTLY from the block header, nothing appended.
+- `groups`: a short description of the two observed groups (values + the sample
+  names/directories you were shown).
+- `discriminator`: what distinguishes them, if you can tell. The directories
+  listed under each group are the most common answer — code from a bundled
+  third-party library, generated output or test scaffolding follows its own
+  conventions and is not this project stating a rule. Leave it empty if the
+  numbers look like genuine inconsistency rather than two groups; do not invent
+  a boundary to explain noise.
+- `checkable`: true ONLY when the distinguishing property is visible in the
   declaration itself or in the file path, so a mechanical check could use it.
-  `false` when telling the groups apart needs understanding what the code means.
-- if the numbers look like genuine inconsistency rather than two groups, say so
-  and leave `discriminator` empty. Do not invent a boundary to explain noise.
+  false when telling the groups apart needs understanding what the code means.
+- `note`: optional, one line of extra context.
 
 A split hypothesis is a question for a human, not a rule. It is never enforced.
 """
@@ -167,6 +189,12 @@ class LearnResult(BaseModel):
     split_hypotheses: list[SplitHypothesis] = Field(default_factory=list)
 
 
+class SplitAdjudication(BaseModel):
+    """Stage-2 output: the strong model's read of the detected hidden splits."""
+
+    split_hypotheses: list[SplitHypothesis] = Field(default_factory=list)
+
+
 @dataclass
 class LearnOutcome:
     """learn 한 번의 결과와 그 호출의 토큰 사용량.
@@ -214,8 +242,28 @@ def apply_threshold_gate(result: LearnResult) -> LearnResult:
 
 
 class ConventionLearner:
-    def __init__(self, model: str | None = None):
+    """Two-stage learner (design doc §4.3).
+
+    Stage 1 classifies naming statistics into rules on the cheap learn tier.
+    Stage 2 escalates one reasoning sub-task — naming a hidden split's boundary —
+    to the strong tier, but only when a split was actually detected (in code, by
+    the extractor) and only for the split groups. Most runs make a single cheap
+    call; a run with a split pays one small extra call. This replaces the old
+    behaviour where a detected split only printed "re-run with a better model".
+    """
+
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        escalate: bool = True,
+        reasoning_model: str | None = None,
+    ):
         self.model = model or default_learn_model()
+        self.reasoning_model = reasoning_model or default_reasoning_model()
+        # Escalating to the same model buys nothing — a run that already uses the
+        # strong model for stage 1 skips stage 2.
+        self.escalate = escalate and self.reasoning_model != self.model
         self.client = get_client()  # provider from LLM_PROVIDER; key from env
 
     def learn(
@@ -227,11 +275,13 @@ class ConventionLearner:
     def learn_with_usage(
         self, stats: list[CategoryStats], scan_scope: RuleScope | None = None
     ) -> LearnOutcome:
-        """learn()과 같되 그 호출의 토큰 사용량을 함께 돌려준다.
+        """learn()과 같되 두 단계의 토큰 사용량을 합산해 함께 돌려준다.
 
         사용량은 예전에 로그로만 남았다 — 검증/비용 집계처럼 usage가 필요한 호출자가
-        provider 클라이언트를 직접 부르지 않아도 되도록 공개 API로 노출한다.
+        provider 클라이언트를 직접 부르지 않아도 되도록 공개 API로 노출한다. 승급이
+        일어나면 1·2단계 토큰을 더해 돌려주므로 비용이 한 숫자로 잡힌다.
         """
+        # Stage 1 — structured classification on the cheap learn tier.
         parsed = self.client.parse(
             model=self.model,
             max_tokens=8000,
@@ -239,22 +289,49 @@ class ConventionLearner:
                 min_occ=MIN_RULE_OCCURRENCES, min_cons=MIN_RULE_CONSISTENCY
             ),
             user=_render_stats_text(stats),
-            schema=LearnResult,
             # Passed explicitly (None → provider default) so the difference from
             # the review stage is a recorded decision, not an oversight.
             temperature=LEARN_TEMPERATURE,
+            schema=LearnResult,
         )
         result = parsed.parsed
         if result is None:
             raise RuntimeError("LLM returned no parseable convention output")
+        input_tokens, output_tokens = parsed.input_tokens, parsed.output_tokens
+
+        # Stage 2 — escalate the reasoning sub-task to the strong tier. The split
+        # was already found in code (extractor.detect_split_signal); the strong
+        # model is asked only to *explain* it, over just the split groups.
+        split_text = _render_splits_text(stats)
+        if split_text and self.escalate:
+            log.info(
+                "hidden split(s) detected — escalating boundary naming to %s",
+                self.reasoning_model,
+            )
+            adj = self.client.parse(
+                model=self.reasoning_model,
+                max_tokens=2000,
+                system=_SPLIT_SYSTEM_PROMPT,
+                user=split_text,
+                temperature=LEARN_TEMPERATURE,
+                schema=SplitAdjudication,
+            )
+            hypotheses = adj.parsed.split_hypotheses if adj.parsed else []
+            input_tokens += adj.input_tokens
+            output_tokens += adj.output_tokens
+        else:
+            # No split, or escalation off: stage 1 is asked not to produce these,
+            # so this is normally empty — but honour it if a caller kept it on.
+            hypotheses = result.split_hypotheses
+
         log.info(
             "LLM proposed %d rule(s), %d rejection(s), %d split hypothesis(es); "
             "tokens in=%d out=%d",
             len(result.rules),
             len(result.rejected),
-            len(result.split_hypotheses),
-            parsed.input_tokens,
-            parsed.output_tokens,
+            len(hypotheses),
+            input_tokens,
+            output_tokens,
         )
         # Rules can only be trusted where they were measured: a scan narrowed to
         # a subtree yields rules scoped to that subtree. Assigned in code, never
@@ -262,10 +339,15 @@ class ConventionLearner:
         scope = scan_scope or RuleScope()
         for rule in result.rules:
             rule.scope = scope.model_copy(deep=True)
+        gated = apply_threshold_gate(result)
         return LearnOutcome(
-            result=apply_threshold_gate(result),
-            input_tokens=parsed.input_tokens,
-            output_tokens=parsed.output_tokens,
+            result=LearnResult(
+                rules=gated.rules,
+                rejected=gated.rejected,
+                split_hypotheses=hypotheses,
+            ),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
 
@@ -296,7 +378,25 @@ def _split_marker(stats: CategoryStats, facet: str, counts: dict[str, int], tota
     )
 
 
+def _facet_axes(s: CategoryStats):
+    """The (facet, counts, denominator) triples a split check iterates over.
+
+    Casing uses its own smaller denominator (single-word names carry no casing
+    signal); prefix and suffix use the category total."""
+    return (
+        ("prefix", s.prefix_counts, s.total),
+        ("suffix", s.suffix_counts, s.total),
+        ("casing", s.casing_counts, s.casing_informative),
+    )
+
+
 def _render_stats_text(stats: list[CategoryStats]) -> str:
+    """Stage-1 input: clean statistics, no split markers.
+
+    Split markers were removed here on purpose — naming a split is stage 2's job
+    now, and the threshold gate rejects a split category regardless of whether
+    the marker is shown. Keeping stage 1 focused on classification is the whole
+    point of the two-stage split (design doc §4.1)."""
     parts = ["## Identifier statistics\n"]
     for s in stats:
         parts.append(f"### {s.category} (total {s.total})")
@@ -308,16 +408,22 @@ def _render_stats_text(stats: list[CategoryStats]) -> str:
             f"{_fmt_counts(s.casing_counts, s.casing_informative)}"
         )
         parts.append(f"samples:  {', '.join(s.samples) or '(none)'}")
-        for facet, counts, total in (
-            ("prefix", s.prefix_counts, s.total),
-            ("suffix", s.suffix_counts, s.total),
-            ("casing", s.casing_counts, s.casing_informative),
-        ):
-            marker = _split_marker(s, facet, counts, total)
-            if marker:
-                parts.append(marker)
         parts.append("")
     return "\n".join(parts)
+
+
+def _render_splits_text(stats: list[CategoryStats]) -> str:
+    """Stage-2 input: only the categories that look like two groups.
+
+    Empty string when nothing is split — the caller uses that to skip the whole
+    escalation call, so most runs never reach the strong model."""
+    blocks: list[str] = []
+    for s in stats:
+        for facet, counts, total in _facet_axes(s):
+            marker = _split_marker(s, facet, counts, total)
+            if marker:
+                blocks.append(marker)
+    return "\n\n".join(blocks)
 
 
 def _fmt_counts(counts: dict[str, int], total: int) -> str:

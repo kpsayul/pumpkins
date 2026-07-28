@@ -14,9 +14,24 @@ from pumpkins.conventions.learner import (
     LearnOutcome,
     LearnResult,
     RejectedCandidate,
+    SplitAdjudication,
     SplitHypothesis,
     apply_threshold_gate,
     render_stats_yaml,
+)
+from pumpkins.conventions.proposer import (
+    InferOutcome,
+    InferredRule,
+    InferredRuleSet,
+    RuleCheck,
+    RuleInferrer,
+    to_convention_rules,
+)
+from pumpkins.conventions.verifier import (
+    CheckResult,
+    VerificationReport,
+    verify,
+    verify_inferred,
 )
 from pumpkins.conventions.scope import RuleScope, path_matches
 from pumpkins.conventions.store import (

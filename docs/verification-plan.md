@@ -11,8 +11,9 @@
 ## 실행 도구
 
 `python verification/run_verification.py` — Track A 주입 검증을 자동화한 드라이버.
-키 불필요 단계(주입 recall/precision, CLI 스모크)는 실제 실행하고, 키 필요 단계(learn 품질·모델
-비교·리뷰 LLM e2e)는 스켈레톤이라 자동 skip — **키가 없어도 flow 전체가 끝까지 돈다.**
+키 불필요 단계(주입 recall/precision, CLI 스모크 등)는 키 없이 실제 실행하고, learn 품질([5])·모델
+비교([6])는 구현돼 키가 있으면 실행, 리뷰 LLM e2e([7])만 아직 스켈레톤이라 자동 skip — **키가 없어도
+flow 전체가 끝까지 돈다.**
 채점표는 `verification/results/`에 누적.
 
 ## Track A — 컨벤션 위반 재현 (핵심)

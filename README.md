@@ -43,8 +43,10 @@ git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처�
 
 | 문서 | 내용 |
 |---|---|
+| [docs/architecture.md](docs/architecture.md) | **현재 구조** — 두 국면(learn/review), 모듈 지도, 데이터 계약, 규칙이 적용되는 방식. 구조만, 추상적으로 |
 | [docs/convention-detection-design.md](docs/convention-detection-design.md) | **핵심 기능 설계 검토** — 사람 리뷰어의 지적을 자동화하는 방안(A/B/C), 설계 결정, 리스크, MVP 경로 |
-| [docs/architecture.md](docs/architecture.md) | 현재 파이프라인 단계별 상세 설계, 분석 모드, 실패 처리 원칙 |
+| [docs/design-history.md](docs/design-history.md) | **시행착오·측정 기록** — 실제 리포에서 발견해 고친 것, 판단의 근거. "왜 이렇게 됐나"의 히스토리(구조 아님) |
+| [docs/concepts.md](docs/concepts.md) | **미구현 컨셉 노트** — 아직 손대지 않은 방향의 검토(합의된 명세 아님) |
 | [docs/verification-plan.md](docs/verification-plan.md) | "리뷰어의 판단을 재현할 수 있는가" 검증 방법, 측정 지표, 채택/기각 기준 |
 | [docs/extending.md](docs/extending.md) | 규칙(체크) 프로파일·diff 소스·분석기·리포트 포맷 확장 방법 |
 | [docs/llm-provider-and-keys-design.md](docs/llm-provider-and-keys-design.md) | LLM 프로바이더(Claude/GPT) 전환 & API 키 관리 설계 |
@@ -254,7 +256,17 @@ pumpkins --repo /path/to/cpp/project --no-llm
 
 # LLM 없이, LLM에 전달될 통계 원본만 출력 (learn 디버깅용)
 pumpkins learn --repo /path/to/cpp/project --no-llm
+
+# 이 리포만의 규칙을 AI가 추측 (틀 없이 코드를 읽음) — 추측을 레포에 대조·채점해 채택
+pumpkins learn --repo /path/to/cpp/project --infer
 ```
+
+**통계는 못 잡는 이 리포만의 규칙 — `--infer`.** 기본 `learn`은 내가 정한 틀(접두사·casing 등)에 맞는
+명명 규칙만 찾습니다. `--infer`는 틀 없이 코드를 LLM에 넣어 *"이 리포가 지키는, 보편 C++이 아닌 관행"* 을
+**추측**하고(예: `#pragma once`, 소유권·레이아웃), 그 추측을 **레포 전체에 대조해 실측 coverage로 채점**합니다
+— 틀린 추측은 coverage로 기각되고, 통과분만 `candidates/`에 오릅니다. 코드를 보내므로 토큰이 더 들어 opt-in이며,
+승인 게이트는 그대로입니다. 검증된 명명 규칙은 결정적으로 검사되고, 그 외는 리뷰 LLM 판단(참고용)으로 붙습니다.
+설계 배경은 [설계 문서 §2](docs/convention-detection-design.md).
 
 컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/pumpkins/`, 없으면 레거시 `conventions.yml`), `--no-conventions`(대조 끄기).
 
@@ -385,12 +397,21 @@ pytest
 
 ## 다음 단계
 
-실제 리포 두 곳에 돌려본 결과가 정한 순서입니다 — 근거는 [설계 문서 §5.5·§6](docs/convention-detection-design.md).
+실제 리포에 돌려본 결과가 정한 순서입니다 — 근거는 [설계 문서 §5.5·§6](docs/convention-detection-design.md).
 
-1. **체크 프로파일 확장** — 현재 `concurrency` 하나뿐이고 [LLM 프롬프트](src/pumpkins/llm/postprocess.py)도 동시성 고정입니다. fmt PR에서 LLM 출력이 11토큰이었던 이유이고, 정작 그 PR의 실제 결함(C++11 리포에 C++17 `inline` 변수 → CI 파괴)은 어떤 프로파일에도 속하지 않습니다. 프로파일별 프롬프트 조각 분리가 선행 작업입니다.
-2. **규칙을 LLM 리뷰에 주입** — 지금 규칙은 결정적 체커까지만 가고 LLM은 규칙을 못 봅니다. 그래서 `facet: other` 규칙이 파일에 기록만 되고 검사되지 않습니다(설계 문서의 방안 B). 결정적 경로는 그대로 두고 LLM 경로를 병행하되, **재현 가능 여부를 finding마다 표시**하는 것이 조건입니다.
+**최근 완료:** 프로파일 분리(`concurrency`+`portability`) · 규칙을 리뷰 LLM에 주입(방안 B) · 실제 리포
+채점 하네스 · learn **2단 여과**(쪼개짐 추론만 강모델로 자동 승급) · **`--infer`**(틀 없는 AI 규칙 추측) +
+**기계 검증**(추측을 레포에 대조·채점).
+
+**다음:**
+
+1. **구조 규칙 + 추론 check 확장 (tree-sitter)** — 계층 방향·소유권처럼 통계·정규식으로 못 닿는 관행. 이게
+   들어오면 `--infer`의 검증 어휘(현재 naming + header_directive)도 구조 check로 넓어져, 추측한 구조 규칙까지
+   **기계로 채점**된다. AST가 전제.
+2. **리뷰측 체커 확장** — 검증된 `facet: other` 규칙(예: `#pragma once`)을 리뷰에서 **결정적으로** 검사.
+   지금은 검증은 되지만 리뷰 적용이 LLM 판단(참고용)에 머문다.
 3. **헤더 분석** — 임시 TU로 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.
-4. **비C++ 동반 파일** — 동작 변경과 스펙/테스트케이스가 한 커밋에 오는 리포에서는 *"동작이 바뀌었는데 스펙/테스트 파일이 안 바뀌었다"* 가 높은 가치의 지적입니다.
-5. **구조 규칙** — 계층 방향·소유권 같은 관행은 정규식으로 닿지 않습니다. tree-sitter/AST가 전제.
-6. **검증 확장** — 스타일 가이드가 공개된 리포(fmt = snake_case, googletest = Google 스타일)로 `learn` 결과를 채점. 사람 판단 없이 채점 가능한 유일한 축입니다.
-7. 대형 diff 청킹, 결과가 유의미하면 GitHub PR 연동(App/Action).
+4. **비C++ 동반 파일** — *"동작이 바뀌었는데 스펙/테스트 파일이 안 바뀌었다"* 가 높은 가치의 지적입니다.
+5. **출처 라벨 정정** — `reconcile`이 규칙별 판정 모델을 남기지 않아, 추론 규칙이 실제로는 강모델이 판정했는데
+   learn 모델로 기록되는 작은 부정확이 있습니다.
+6. 대형 diff 청킹, 결과가 유의미하면 GitHub PR 연동(App/Action).

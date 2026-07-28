@@ -15,7 +15,7 @@ import sys
 
 # --- Pipeline constants -----------------------------------------------------
 
-# C++ syntax — including which extensions count — lives in pumpkins/languages/cpp.py.
+# C++ syntax — including which extensions count — lives in pumpkins/languages/cpp_parser.py.
 # A repo can override the extension set; see languages/__init__.py.
 
 # Extra lines around each changed range passed to clang-tidy's --line-filter.
@@ -82,6 +82,18 @@ def default_review_model() -> str:
 
 def default_learn_model() -> str:
     return PROVIDER_MODELS[current_provider()]["learn"]
+
+
+def default_reasoning_model() -> str:
+    """Model for learn's *reasoning* sub-task — naming a hidden split's boundary.
+
+    This is the strong (review-tier) model on purpose. §4.1 measured that the
+    cheap learn tier reads the two groups' directories and still answers "no
+    structural distinction", while the strong tier says "test/gtest vs
+    include/fmt": same input, split answer. So the two-stage learner (design doc
+    §4.3) keeps classification on the cheap tier and escalates only this
+    reasoning step here. Same model as review; named apart so the intent reads."""
+    return PROVIDER_MODELS[current_provider()]["review"]
 
 
 def required_key_env() -> str:

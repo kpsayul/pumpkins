@@ -114,12 +114,12 @@ Stage 4의 계약은 `render_*(result: ReviewResult) -> str`입니다.
 판단하세요. 그게 이 파일의 존재 이유입니다 (프로바이더/모델, clang-tidy 버전,
 `rules_fingerprint`가 그 세 축입니다).
 
-## 언어 문법 건드리기 (`languages/cpp.py`)
+## 언어 문법 건드리기 (`languages/cpp_parser.py`)
 
 선언 정규식·예약어·접근 지정자·확장자가 모두 여기 있습니다. `extractor.py`는 통계만 담당하니
 **문법 관련 변경은 이 파일에서** 하세요.
 
-새 카테고리를 추가할 때는 `CATEGORIES`(extractor.py)와 `cpp.match_identifiers`의 분기를 함께 고치고,
+새 카테고리를 추가할 때는 `CATEGORIES`(extractor.py)와 `cpp_parser.match_identifiers`의 분기를 함께 고치고,
 **하위 호환을 반드시 생각하세요** — 이미 승인·커밋된 규칙이 새 카테고리 이름을 모르면 조용히 죽습니다.
 `checker._CATEGORY_ALIASES`가 그 장치입니다(옛 이름 → 새 이름들). 넓은 쪽에서 좁은 쪽으로만
 매핑하고, 반대 방향은 만들지 마세요: 정보가 없을 때 추측하는 규칙이 됩니다.
@@ -170,12 +170,27 @@ LLM이 채우면 안 되는 필드를 `ConventionRule`에 넣으면 모델이 �
 상태를 늘리려면(`deprecated` 같은 것) `config.RULE_STATUS_DIRS`에 항목을 추가하세요 —
 디렉터리가 곧 상태이므로 그 dict가 유일한 정의입니다.
 
+## 추론 check 추가 (`conventions/verifier.py`)
+
+`--infer`는 규칙을 추측한 뒤 **check로 검증**합니다(추측 → 리포에 대조 → 게이트). 새 종류의 규칙을
+기계 검증하려면 check 어휘를 넓히세요:
+
+1. `proposer.py`의 `RuleCheck`에 새 `kind`와 파라미터를 추가하고, 추론 프롬프트(`_INFER_SYSTEM`)에
+   그 kind를 언제·어떻게 채우는지 **예시**를 넣으세요 (모델이 자기 규칙과 맞는 check를 붙이도록).
+2. `verifier.py`의 `verify()`에 그 kind를 리포 전체에 대조해 `CheckResult(matches, total)`를 내는
+   분기를 추가하세요. `verify_inferred`가 나머지(게이트·분류)를 처리합니다.
+3. 검증된 규칙을 리뷰에서 **결정적으로** 검사하려면 review측 체커도 필요합니다 — 현재는 naming만
+   [checker.py](../src/pumpkins/conventions/checker.py)가 검사하고, 나머지 검증분은 LLM 판단에 머뭅니다.
+
+원칙은 게이트와 같습니다: 실패 방향을 안전하게(검증 실패 = 기각, 틀린 규칙 채택 아님). AST가 필요한
+구조 check(계층·소유권)는 tree-sitter가 전제입니다([concepts.md](concepts.md)).
+
 ## LLM 관련 조정 포인트
 
 | 조정 | 위치 | 비고 |
 |---|---|---|
-| 모델 변경 | CLI `--model` 또는 `config.DEFAULT_REVIEW_MODEL` / `DEFAULT_LEARN_MODEL` | 리뷰 `claude-opus-4-8`, 학습 `claude-sonnet-5` — 단계별 근거는 [설계 문서 §4](convention-detection-design.md) |
-| 프롬프트 | `llm/postprocess.py` `_SYSTEM_PROMPT` | 실패 시나리오를 구체적으로 쓰게 하는 문구가 핵심 |
+| 모델 변경 | CLI `--model` 또는 `config.PROVIDER_MODELS` (`default_review_model()` / `default_learn_model()`) | 프로바이더별 기본값 — anthropic이면 리뷰 `claude-opus-4-8`, 학습 `claude-sonnet-5`. 단계별 근거는 [설계 문서 §4](convention-detection-design.md) |
+| 프롬프트 | `llm/postprocess.py` `_BASE_PROMPT` + `build_system_prompt()` | 공통·프로파일·저장소 규칙 세 조각으로 조립. 실패 시나리오를 구체적으로 쓰게 하는 문구가 핵심 |
 | 샘플링 온도 | `config.REVIEW_TEMPERATURE` / `LEARN_TEMPERATURE` | 리뷰는 `0.0` 고정(사용자에게 바로 가는 출력), 학습은 `None`(프로바이더 기본값 — 임계선·승인 게이트가 뒤에 있음). `None`은 파라미터를 **아예 보내지 않는다**는 뜻 — 일부 모델이 이 파라미터를 거부하므로 |
 | 출력 스키마 | `_Verdict`, `_ExtraFinding`, `_LlmReview` | Pydantic 모델 수정만으로 스키마 강제 유지 |
 | 대형 diff 청킹 | `process()` 호출 전 `DiffScope` 분할 | 파일 단위 분할 → 호출 병렬화 순서로 |
@@ -187,7 +202,7 @@ LLM이 채우면 안 되는 필드를 `ConventionRule`에 넣으면 모델이 �
 | `LINE_FILTER_MARGIN` | 15 | 변경 범위 확장폭 — 동시성 문맥 확보용. 노이즈가 늘면 줄일 것 |
 | `SHALLOW_MODE_STD` | c++17 | 얕은 모드 기본 표준. 대상 레포에 맞게 CLI 옵션화 가능 |
 | `COMPILE_DB_CANDIDATES` | `.`, `build`, `out`, ... | compile_commands.json 탐색 경로 |
-| `CPP_EXTENSIONS` | .cpp/.h 등 | diff에서 C++로 취급할 확장자. 여기 없는 확장자는 `skipped_files`로 빠져 리포트에 명시됨 |
+| C++ 확장자 | `cpp_parser.EXTENSIONS` (+ 리포별 `pumpkins/settings.yml`) | diff에서 C++로 취급할 확장자 — config.py가 아니라 **언어 파서**에 있음. 여기 없는 확장자는 `skipped_files`로 빠져 리포트에 명시됨 |
 | `MIN_RULE_OCCURRENCES` / `MIN_RULE_CONSISTENCY` | 20 / 0.85 | 컨벤션 채택 임계선. **분모가 맞을 때만 안전하다** — [설계 문서 §5.5](convention-detection-design.md) |
 | `LEARN_SKIP_DIRS` | `third_party`, `vendor`, ... | learn이 절대 읽지 않는 디렉터리 |
 | `LEARN_TEST_DIRS` | `test`, `tests`, ... | 기본 제외, `learn --include-tests`로 해제. 벤더링된 테스트 프레임워크가 통계를 뒤집은 실측이 근거 |
