@@ -18,10 +18,13 @@ gated by the repo's own code):
 - unverified — no runnable check (kind="none"). Stays a facet=other guess,
   LLM-judged, reproducible=False (the pre-verification behaviour).
 
-Today's check vocabulary is naming + header_directive: what runs without an AST.
-It is a registry meant to grow — when inference keeps proposing a checkable kind
-we cannot yet run, that names the next verifier to add (demand-driven, not
-guessed up front). Structural checks (layering, ownership) need tree-sitter.
+Check vocabulary: naming + header_directive run on the regex parser; return_type
+is the first STRUCTURAL check and runs on a tree-sitter AST (languages/cpp_ast).
+If that native lib is broken/ABI-skewed, the check degrades to "cannot verify"
+(None) rather than crashing. The registry is meant to grow: when inference keeps
+proposing a checkable kind we cannot yet run, that names the next verifier to add
+(demand-driven). Further structural checks (layering, ownership graph) build on
+the same AST layer.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ from pumpkins.conventions.proposer import (
     to_convention_rules,
 )
 from pumpkins.conventions.scope import RuleScope
-from pumpkins.languages import cpp_parser
+from pumpkins.languages import cpp_ast, cpp_parser
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +130,32 @@ def verify(
                 continue
             matches += first == text_want
         return CheckResult(matches, len(headers))
+
+    if check.kind == "return_type":
+        # Structural: needs the AST. Without tree-sitter we cannot measure it, so
+        # the rule stays an unverified guess (None), the same safe degradation as
+        # any other uncheckable rule — never a silent pass.
+        want = check.type_contains.strip()
+        if not want or not cpp_ast.available():
+            return None
+        prefix = check.name_prefix
+        # Dedup by name: a function declared in a header and defined in a source
+        # is one function, not two — counting both would inflate the occurrence
+        # gate. Prefer an informative return type over a bare `auto`/empty one.
+        seen: dict[str, str] = {}
+        for path in files:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for fn in cpp_ast.functions(text):
+                if prefix and not fn.name.startswith(prefix):
+                    continue
+                prev = seen.get(fn.name)
+                if prev is None or (prev in ("", "auto") and fn.return_type not in ("", "auto")):
+                    seen[fn.name] = fn.return_type
+        matches = sum(1 for rtype in seen.values() if want in rtype)
+        return CheckResult(matches, len(seen))
 
     return None
 

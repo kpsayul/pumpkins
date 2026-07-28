@@ -401,13 +401,15 @@ pytest
 
 **최근 완료:** 프로파일 분리(`concurrency`+`portability`) · 규칙을 리뷰 LLM에 주입(방안 B) · 실제 리포
 채점 하네스 · learn **2단 여과**(쪼개짐 추론만 강모델로 자동 승급) · **`--infer`**(틀 없는 AI 규칙 추측) +
-**기계 검증**(추측을 레포에 대조·채점).
+**기계 검증**(추측을 레포에 대조·채점) · **구조 규칙 첫 슬라이스** — tree-sitter AST로 `return_type` check
+(예: "create* 함수는 unique_ptr를 반환") 검증.
 
 **다음:**
 
-1. **구조 규칙 + 추론 check 확장 (tree-sitter)** — 계층 방향·소유권처럼 통계·정규식으로 못 닿는 관행. 이게
-   들어오면 `--infer`의 검증 어휘(현재 naming + header_directive)도 구조 check로 넓어져, 추측한 구조 규칙까지
-   **기계로 채점**된다. AST가 전제.
+1. **구조 규칙 확장 (tree-sitter)** — AST 층([cpp_ast.py](src/pumpkins/languages/cpp_ast.py))과 첫 구조
+   check(`return_type`)는 들어왔다. 남은 건 (a) 더 많은 구조 check — 계층 방향·소유권 그래프·상속, (b) 통계
+   추출기(`extractor`)를 정규식→AST로 올려 명명 통계의 정확도까지 높이기, (c) 검증된 구조 규칙을 리뷰에서
+   결정적으로 검사(현재는 measured지만 리뷰 적용은 LLM 판단).
 2. **리뷰측 체커 확장** — 검증된 `facet: other` 규칙(예: `#pragma once`)을 리뷰에서 **결정적으로** 검사.
    지금은 검증은 되지만 리뷰 적용이 LLM 판단(참고용)에 머문다.
 3. **헤더 분석** — 임시 TU로 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.

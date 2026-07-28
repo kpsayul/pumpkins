@@ -42,7 +42,8 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `conventions/checker.py` | facet 규칙을 diff와 결정적 대조 | review |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
-| `languages/cpp_parser.py` | C++ 문법 지식(선언 인식·문맥 추적) | 공통 |
+| `languages/cpp_parser.py` | C++ 문법 지식(정규식 선언 인식·문맥 추적) | 공통 |
+| `languages/cpp_ast.py` | C++ AST(tree-sitter) — 구조 규칙 검증용 (네이티브 dep, import-가드로 격리) | learn |
 | `models.py` | 단계 간 데이터 계약 | 공통 |
 | `config.py` | 전역 설정·모델 선택·상수 | 공통 |
 
@@ -148,6 +149,6 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 
 - **리뷰 프로파일** — `profiles.py`에 (clang-tidy 체크 + LLM 지시) 한 벌을 추가하면 새 검사 축이 된다.
 - **언어** — C++ 문법 지식이 `languages/cpp_parser.py` 한 곳에 모여 있어, 두 번째 언어는 경계가 보이는 리팩터링이 된다.
-- **추론 check 어휘** — `verifier.py`의 check 종류(현재 naming·header)를 늘리면 추론 규칙의 검증 범위가 넓어진다.
+- **추론 check 어휘** — `verifier.py`의 check 종류(naming·header는 정규식, `return_type`은 tree-sitter AST)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp_ast.py` 위에 쌓인다.
 
 각 확장의 상세 절차는 [extending.md](extending.md), 결정의 근거는 [design-history.md](design-history.md).

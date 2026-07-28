@@ -14,6 +14,11 @@ dependencies = [
     "unidiff>=0.7",
     "pydantic>=2.0",
     "pyyaml>=6.0",
+    # Structural (AST) checks for `learn --infer`. Native/ABI-fragile, so
+    # languages/cpp_ast.py import-guards it — a broken install degrades that one
+    # check instead of crashing unrelated commands (see the module docstring).
+    "tree-sitter>=0.23",
+    "tree-sitter-cpp>=0.23",
 ]
 
 [project.optional-dependencies]

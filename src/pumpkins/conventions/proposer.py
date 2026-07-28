@@ -73,6 +73,10 @@ For each convention you infer:
       value for prefix/suffix is the literal affix, e.g. "m_", "_", "Impl".
     * header_directive — {kind: "header_directive", text: the exact first line,
       e.g. "#pragma once"}.
+    * return_type (structural) — {kind: "return_type", name_prefix: e.g.
+      "create", type_contains: e.g. "unique_ptr"}: functions whose name starts
+      with name_prefix return a type whose text contains type_contains. Use for
+      factory / ownership return conventions ("make*/create* return unique_ptr").
   Otherwise set {kind: "none"}. A wrong check gets the rule REJECTED when its
   measured coverage is low, so only fill it when the rule genuinely reduces to
   that check across ALL of the category (not a subset you cannot express).
@@ -95,15 +99,22 @@ class RuleCheck(BaseModel):
 
     kind="none" means the rule is not expressible in today's check vocabulary,
     so it stays an LLM-judged guess (facet=other, reproducible=False). The other
-    kinds are run by conventions/verifier.py to measure real coverage."""
+    kinds are run by conventions/verifier.py to measure real coverage.
 
-    kind: Literal["naming", "header_directive", "none"] = "none"
+    `return_type` is structural — it needs an AST (tree-sitter), so it only runs
+    where the optional dependency is installed; otherwise the rule degrades to
+    an unverified guess like any other uncheckable one."""
+
+    kind: Literal["naming", "header_directive", "return_type", "none"] = "none"
     # naming
     category: str = ""   # member | function | class_type | constant
     facet: Literal["prefix", "suffix", "casing", ""] = ""
     value: str = ""
     # header_directive
     text: str = ""
+    # return_type (structural, needs tree-sitter)
+    name_prefix: str = ""     # only functions whose name starts with this
+    type_contains: str = ""   # ...must return a type whose text contains this
 
 
 class InferredRule(BaseModel):

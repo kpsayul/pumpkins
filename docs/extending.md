@@ -182,8 +182,12 @@ LLM이 채우면 안 되는 필드를 `ConventionRule`에 넣으면 모델이 �
 3. 검증된 규칙을 리뷰에서 **결정적으로** 검사하려면 review측 체커도 필요합니다 — 현재는 naming만
    [checker.py](../src/pumpkins/conventions/checker.py)가 검사하고, 나머지 검증분은 LLM 판단에 머뭅니다.
 
-원칙은 게이트와 같습니다: 실패 방향을 안전하게(검증 실패 = 기각, 틀린 규칙 채택 아님). AST가 필요한
-구조 check(계층·소유권)는 tree-sitter가 전제입니다([concepts.md](concepts.md)).
+원칙은 게이트와 같습니다: 실패 방향을 안전하게(검증 실패 = 기각, 틀린 규칙 채택 아님).
+
+**구조 check**는 [cpp_ast.py](../src/pumpkins/languages/cpp_ast.py)(tree-sitter AST) 위에 쌓습니다 —
+`return_type`이 그 예입니다("create*는 unique_ptr 반환"). tree-sitter는 정식 의존성이지만 **네이티브**라,
+ABI가 깨지면 `verify()`가 `None`을 돌려 그 check만 미검증으로 저하됩니다(무관한 명령은 안 죽음). 계층
+방향·소유권 그래프 같은 관계형 check도 같은 AST 층에 `cpp_ast`의 새 추출 함수 + `verify()` 분기로 추가합니다.
 
 ## LLM 관련 조정 포인트
 
