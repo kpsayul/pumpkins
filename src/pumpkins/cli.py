@@ -19,7 +19,7 @@ from dotenv import find_dotenv, load_dotenv
 from pumpkins.analysis import ClangTidyRunner
 from pumpkins.analysis.cxx_standard import detect_cxx_standard
 from pumpkins.config import (
-    CONVENTIONS_DIRNAME,
+    PUMPKINS_DIRNAME,
     REVIEW_TEMPERATURE,
     CONVENTIONS_FILENAME,
     LEARN_TEST_DIRS,
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--conventions",
         type=Path,
         default=None,
-        help=f"rules to check the diff against — a {CONVENTIONS_DIRNAME}/ directory "
+        help=f"rules to check the diff against — a {PUMPKINS_DIRNAME}/ directory "
         f"or a legacy {CONVENTIONS_FILENAME} (default: whichever exists in the repo; "
         f"see `pumpkins learn`)",
     )
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _default_conventions_path(repo: Path) -> Path | None:
     """Prefer the conventions/ store; fall back to a pre-directory single file."""
-    for candidate in (repo / CONVENTIONS_DIRNAME, repo / CONVENTIONS_FILENAME):
+    for candidate in (repo / PUMPKINS_DIRNAME, repo / CONVENTIONS_FILENAME):
         if candidate.exists():
             return candidate
     return None
@@ -145,7 +145,7 @@ def run_pipeline(args: argparse.Namespace) -> tuple[ReviewResult, RunContext]:
     elif not args.no_conventions:
         log.debug(
             "no %s/ or %s in repo — convention check skipped",
-            CONVENTIONS_DIRNAME, CONVENTIONS_FILENAME,
+            PUMPKINS_DIRNAME, CONVENTIONS_FILENAME,
         )
 
     # Stage 3 — LLM triage (optional)
@@ -229,20 +229,20 @@ def build_learn_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=None,
-        help=f"rule store directory (default: <repo>/{CONVENTIONS_DIRNAME}/). "
+        help=f"rule store directory (default: <repo>/{PUMPKINS_DIRNAME}/). "
         f"With --no-llm this is a file for the statistics dump instead",
     )
     p.add_argument(
         "--accept-all",
         action="store_true",
-        help=f"write adopted rules straight into {CONVENTIONS_DIRNAME}/rules/ instead "
+        help=f"write adopted rules straight into {PUMPKINS_DIRNAME}/rules/ instead "
         "of candidates/. Skips the review step — use for a first run you intend "
         "to accept wholesale",
     )
     p.add_argument(
         "--reconsider",
         action="store_true",
-        help=f"also re-propose rules previously moved to {CONVENTIONS_DIRNAME}/archive/ "
+        help=f"also re-propose rules previously moved to {PUMPKINS_DIRNAME}/archive/ "
         "(they are suppressed by default: a rejection is a decision, not an absence)",
     )
     p.add_argument(
@@ -372,7 +372,7 @@ def _format_split_hypotheses(hypotheses, root) -> str:
             lines.append(f"      가르는 기준을 찾지 못함 — 진짜 혼재로 보임")
         if h.note:
             lines.append(f"      {h.note}")
-    lines.append(f"  전문: {root.name}/config.yml 의 split_hypotheses")
+    lines.append(f"  전문: {root.name}/learn-report.yml 의 split_hypotheses")
     return "\n".join(lines)
 
 
@@ -391,7 +391,7 @@ def run_learn(argv: list[str]) -> int:
         reconcile,
         render_stats_yaml,
         select_files,
-        write_config,
+        write_scan_report,
     )
 
     # The scan's reach becomes the scope of every rule it produces — a rule is
@@ -447,12 +447,12 @@ def run_learn(argv: list[str]) -> int:
 
         # Merge into decisions already on disk rather than overwriting them.
         # Re-running learn must never cost the user their curation.
-        root = args.out or (args.repo / CONVENTIONS_DIRNAME)
+        root = args.out or (args.repo / PUMPKINS_DIRNAME)
         rec = reconcile(
             load_all(root), result.rules, model=args.model, reconsider=args.reconsider
         )
         written = apply(root, rec, accept_all=args.accept_all)
-        write_config(
+        write_scan_report(
             root, args.repo, args.model, stats, scan_scope, scanned,
             rejected=[r.model_dump() for r in result.rejected],
             split_hypotheses=[s.model_dump() for s in result.split_hypotheses],

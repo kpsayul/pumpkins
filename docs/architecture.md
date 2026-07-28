@@ -147,7 +147,7 @@ LLM의 역할은 두 갈래:
 |---|---|---|
 | 공통 | `_BASE_PROMPT` | 역할, triage 규칙, 출력 계약 |
 | 프로파일 | `profiles.PROFILES[name].llm_focus` | 이번 실행에서 무엇을 찾을지 (+ 필요 시 최소 C++ 표준) |
-| 저장소 규칙 | `conventions/rules/`의 활성 규칙 | 사람이 승인한 이 리포의 판단 기준 |
+| 저장소 규칙 | `pumpkins/rules/`의 활성 규칙 | 사람이 승인한 이 리포의 판단 기준 |
 
 이전에는 이게 동시성 전용 문자열 하나로 하드코딩돼 있었습니다. 그 대가가 실측으로 드러났는데 —
 어떤 PR에 돌렸을 때 LLM 출력이 11토큰이었습니다. 프롬프트가 동시성만 물었고 그 PR엔 동시성 코드가
@@ -202,9 +202,9 @@ detector는 여전히 `llm`이고 재현 보장은 없습니다 — **근거는 
 
 | 항목 | 내용 |
 |---|---|
-| 입력 | `DiffScope` + `<repo>/conventions/rules/`의 **활성** 규칙 (`facet`/`value`/`scope`) |
+| 입력 | `DiffScope` + `<repo>/pumpkins/rules/`의 **활성** 규칙 (`facet`/`value`/`scope`) |
 | 출력 | 질문형 `Finding[]` (`evidence.detector = convention`, severity `low` 고정 — 네이밍이 버그를 이기지 않게) |
-| 실행 조건 | `conventions/`(또는 레거시 `conventions.yml`) 존재 시 자동 (`--conventions PATH` / `--no-conventions`) — **LLM·API 키 불필요, 결정적** |
+| 실행 조건 | `pumpkins/`(또는 레거시 `conventions.yml`) 존재 시 자동 (`--conventions PATH` / `--no-conventions`) — **LLM·API 키 불필요, 결정적** |
 
 - **카테고리 하위 호환**: 멤버가 visibility로 갈리기 전에 쓰인 `category: member_variable` 규칙은 양쪽 모두에 계속 적용됩니다. 반대는 아닙니다 — `private_member` 규칙은 visibility를 못 읽은 멤버에 적용되지 않습니다. 추측이 오탐을 만드는 경로라서입니다.
 - **`candidates/`의 규칙은 적용되지 않습니다.** 승인이 실제 게이트여야 하므로 `load_active_rules`가 `rules/`만 읽고, 대기 중 후보 수는 리포트에 표시합니다 — 안 그러면 "학습했는데 지적이 없네"가 통과로 읽힙니다.
@@ -254,19 +254,27 @@ repo 스캔 ──▶ CategoryStats[] ──▶ LearnResult ──▶ Reconcilia
 |---|---|
 | L1 `extractor.py` | 정규식 기반 C++ 식별자 추출(멤버/**상수**/함수/클래스) → 접두사·접미사·casing 분포 통계. **LLM엔 이 통계+샘플만 전달** — 파일 원문은 절대 안 보냄 (토큰 비용 절감). 파서가 아닌 휴리스틱 — tree-sitter가 업그레이드 경로 |
 | L2 `learner.py` | LLM(learn 기본 모델 — anthropic: Sonnet / openai: gpt-4o-mini)이 규칙 후보 판정 → **코드 측 임계선 게이트**(`MIN_RULE_OCCURRENCES`/`MIN_RULE_CONSISTENCY`)가 LLM 판단과 무관하게 미달 규칙을 강등. 이 모듈은 무엇을 *제안*할지만 정하고, 운명은 결정하지 않음 |
-| L3 `store.py` | 기존 결정과 병합(`reconcile`) → `conventions/`에 규칙당 파일 하나로 기록. 후보는 `candidates/`, 근거·통계는 `config.yml` |
+| L3 `store.py` | 기존 결정과 병합(`reconcile`) → `pumpkins/`에 규칙당 파일 하나로 기록. 후보는 `candidates/`, 근거·통계는 `learn-report.yml` |
 
 ### 규칙 저장소 (`conventions/store.py`)
 
 ```
-conventions/{config.yml, rules/, candidates/, archive/}
+pumpkins/
+├── settings.yml   사람이 씀 — 확장자 매핑 등. learn 이 건드리지 않음
+├── learn-report.yml       learn 이 씀 — 스캔 범위·임계선·통계·기각·쪼개짐 가설
+├── rules/         활성 (리뷰가 적용)
+├── candidates/    판단 대기
+└── archive/       기각·은퇴
 ```
+
+디렉터리 이름을 도구 이름으로 둔 이유: `conventions`는 리포가 자기 문서나 네임스페이스에
+이미 쓸 수 있는 흔한 단어라, 남의 프로젝트에 심는 디렉터리가 일반명사를 차지하면 안 됩니다.
 
 두 가지 결정이 이 모듈의 형태를 정합니다.
 
 **상태는 디렉터리다.** 규칙이 놓인 폴더가 그 규칙의 상태이므로 파일 안 `status:` 필드와 실제가 어긋날 수 없고, 상태 전이가 `git mv` 한 번이라 "누가 언제 승인했는가"를 git이 자동 기록합니다 — 승인자 필드를 손으로 관리하지 않습니다.
 
-**이력은 git에 맡긴다.** 규칙 하나 = 파일 하나이므로 `git log --follow conventions/rules/<id>.yml`이 이력입니다. 파일 안 `history:` 배열은 작성자 신원도 서명도 없는 git 재구현이라 두지 않았고, 파일에는 git이 줄 수 없는 것 — 결정의 **이유** — 만 남깁니다.
+**이력은 git에 맡긴다.** 규칙 하나 = 파일 하나이므로 `git log --follow pumpkins/rules/<id>.yml`이 이력입니다. 파일 안 `history:` 배열은 작성자 신원도 서명도 없는 git 재구현이라 두지 않았고, 파일에는 git이 줄 수 없는 것 — 결정의 **이유** — 만 남깁니다.
 
 규칙당 파일 하나인 이유: learn이 기계적으로 파일을 씁니다. 카테고리별로 묶으면 규칙 하나가 바뀔 때 무관한 규칙까지 재작성돼 git 이력이 더러워지고 동시 추가 시 충돌합니다.
 
@@ -318,7 +326,7 @@ C++ 문법 지식 — 확장자, 예약어, 선언 정규식, 접근 지정자, 
 무엇을 필요로 할지 추측하는 일입니다. 대신 얻은 것은 두 번째 언어가 올 때 **경계가 보이는 리팩토링**이
 된다는 점입니다 — 두 패키지를 뒤지는 작업이 아니라.
 
-### 확장자는 리포별로 (`.pumpkins.yml`)
+### 확장자는 리포별로 (`pumpkins/settings.yml`)
 
 ```yaml
 languages:
@@ -331,9 +339,10 @@ languages:
 `.inc`/`.ipp`는 어떤 리포에선 C++이고 어떤 리포에선 생성 데이터입니다. 실제로 `.tc`를 YAML
 테스트케이스로 쓰는 리포를 만났고, 전역 목록으로는 그걸 소스로 오독합니다.
 
-**`conventions/config.yml`이 아니라 리포 루트에 둔 이유**는 둘입니다: 그 파일은 `learn`이 매번
-다시 쓰므로 손으로 적은 절이 지워지고(규칙 저장소를 재구조화하며 고친 바로 그 결함),
-리뷰 파이프라인은 `--no-conventions`로도 이 매핑이 필요합니다.
+**같은 디렉터리 안이지만 `learn-report.yml`과 파일을 나눈 기준은 누가 쓰는가입니다.** `learn-report.yml`은
+`learn`이 매 실행 덮어쓰므로 손으로 적은 값이 거기 있으면 지워집니다 — 규칙 저장소를
+재구조화하며 고친 바로 그 결함입니다. `settings.yml`은 생성 대상이 아니라 안전하고,
+규칙을 안 읽는 `--no-conventions` 실행에서도 읽힙니다.
 
 추가한 확장자는 **TU 집합에 자동으로 들어가지 않습니다.** `.ipp`를 추가하는 건 "헤더가 더 있다"는
 뜻이지 "`.cpp`가 더 있다"는 뜻이 아니라서, clang-tidy가 단독 분석할 수 있는 목록은 리포가 좁힐 수만
@@ -353,7 +362,7 @@ languages:
 나란히 넣습니다 — 통계는 "63% vs 36%"라고만 말하지만, `MatchAndExplain, DescribeTo (from test/gtest)`와
 `format_to, vformat (from include/fmt)`를 나란히 보면 답이 보입니다.
 
-**결과는 규칙이 아니라 사람에게 던지는 질문입니다.** `conventions/config.yml`의
+**결과는 규칙이 아니라 사람에게 던지는 질문입니다.** `pumpkins/learn-report.yml`의
 `split_hypotheses`에 기록되고 절대 적용되지 않습니다. 행동은 두 갈래이고 둘 다 사람 결정입니다 —
 경계가 기계로 확인 가능하면 추출기에서 카테고리를 쪼개고, 아니면 scope 붙인 규칙을 손으로 씁니다.
 

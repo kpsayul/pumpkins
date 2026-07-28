@@ -8,7 +8,14 @@ threshold gate rejected a rule that was actually two rules.
 
 import pytest
 
-from pumpkins.languages import cpp, cpp_extensions, cpp_tu_extensions
+from pumpkins.languages import cpp, cpp_extensions, cpp_tu_extensions, settings_path
+
+
+def _settings(repo):
+    """pumpkins/settings.yml — 사람이 쓰는 설정. learn 이 덮어쓰는 learn-report.yml 과 별개."""
+    path = settings_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _categories(text: str) -> dict[str, list[str]]:
@@ -87,7 +94,7 @@ def test_defaults_without_a_repo_config(tmp_path):
 
 
 def test_repo_can_add_extensions(tmp_path):
-    (tmp_path / ".pumpkins.yml").write_text(
+    _settings(tmp_path).write_text(
         "languages:\n  cpp:\n    extra_extensions: ['.ipp', 'tcc']\n", encoding="utf-8"
     )
     extensions = cpp_extensions(tmp_path)
@@ -98,14 +105,14 @@ def test_repo_can_add_extensions(tmp_path):
 def test_repo_can_remove_extensions(tmp_path):
     """A repo using `.tc` for YAML test cases must be able to say so — reading
     those as C++ produced findings against files that were never source."""
-    (tmp_path / ".pumpkins.yml").write_text(
+    _settings(tmp_path).write_text(
         "languages:\n  cpp:\n    exclude_extensions: ['.inl']\n", encoding="utf-8"
     )
     assert ".inl" not in cpp_extensions(tmp_path)
 
 
 def test_removing_an_extension_also_removes_it_from_the_tu_set(tmp_path):
-    (tmp_path / ".pumpkins.yml").write_text(
+    _settings(tmp_path).write_text(
         "languages:\n  cpp:\n    exclude_extensions: ['.cc']\n", encoding="utf-8"
     )
     assert ".cc" not in cpp_tu_extensions(tmp_path)
@@ -115,7 +122,7 @@ def test_removing_an_extension_also_removes_it_from_the_tu_set(tmp_path):
 def test_added_extensions_are_not_assumed_compilable(tmp_path):
     """Adding `.ipp` means "more header", not "more .cpp" — clang-tidy cannot
     analyze it standalone, so it must not enter the TU set by accident."""
-    (tmp_path / ".pumpkins.yml").write_text(
+    _settings(tmp_path).write_text(
         "languages:\n  cpp:\n    extra_extensions: ['.ipp']\n", encoding="utf-8"
     )
     assert ".ipp" in cpp_extensions(tmp_path)
@@ -124,5 +131,5 @@ def test_added_extensions_are_not_assumed_compilable(tmp_path):
 
 @pytest.mark.parametrize("content", ["languages: [not, a, map]", ": : broken yaml : :"])
 def test_a_broken_config_is_ignored_not_fatal(tmp_path, content):
-    (tmp_path / ".pumpkins.yml").write_text(content, encoding="utf-8")
+    _settings(tmp_path).write_text(content, encoding="utf-8")
     assert ".cpp" in cpp_extensions(tmp_path)

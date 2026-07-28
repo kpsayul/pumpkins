@@ -31,11 +31,11 @@ git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처�
 
 **② 컨벤션 학습 + 지적 (MVP 1·2단계)** — `pumpkins learn` → 리뷰에 자동 연결
 
-리포 스캔 → 식별자 명명 통계(기계적 추출 — LLM엔 통계 요약만 전달) → LLM 규칙 판정 → 임계선 게이트(20회+/85%+) → 사람이 검수·커밋하는 **`conventions/` 규칙 저장소** 생성.
+리포 스캔 → 식별자 명명 통계(기계적 추출 — LLM엔 통계 요약만 전달) → LLM 규칙 판정 → 임계선 게이트(20회+/85%+) → 사람이 검수·커밋하는 **`pumpkins/` 규칙 저장소** 생성.
 
 `learn`은 **필요할 때 한 번**(리포가 크게 바뀌면 다시), `review`는 **모든 PR에** 돌리는 구조입니다. 리뷰는 규칙 파일을 읽기만 하므로 규칙 생성 비용이 0입니다.
 
-이후 리뷰(`pumpkins`) 실행 시 `<repo>/conventions/`의 **활성 규칙**과 diff를 대조해 **질문형으로 지적**합니다 — *"`running` — 멤버 변수는 `m_` 접두사를 사용한다 관행과 다른 것 같아요. 여기만 다르게 한 이유가 있을까요?"* (근거 수치 + 적용 범위 + rename 제안 포함). 이 대조는 결정적이라 **API 키 없이도 동작**합니다.
+이후 리뷰(`pumpkins`) 실행 시 `<repo>/pumpkins/`의 **활성 규칙**과 diff를 대조해 **질문형으로 지적**합니다 — *"`running` — 멤버 변수는 `m_` 접두사를 사용한다 관행과 다른 것 같아요. 여기만 다르게 한 이유가 있을까요?"* (근거 수치 + 적용 범위 + rename 제안 포함). 이 대조는 결정적이라 **API 키 없이도 동작**합니다.
 
 규칙마다 **적용 범위(`scope`)** 를 둘 수 있어서 레거시·생성 코드 트리는 자기 관행을 유지합니다 — 아래 [적용 범위 정하기](#적용-범위-정하기--폴더확장자별로-다른-규칙) 참고.
 
@@ -70,7 +70,8 @@ git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ─�
 | `conventions/learner.py` | (learn L2) LLM 규칙 판정 + 임계선 게이트 — 무엇을 *제안*할지만 정함 |
 | `conventions/checker.py` | (리뷰 3.5단계) diff를 활성 규칙과 결정적 대조 → 질문형 finding |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위 (경로 glob / 확장자 / 제외 경로) |
-| `conventions/store.py` | `conventions/` 규칙 저장소 — 상태(디렉터리), 승인 게이트, 재실행 병합 |
+| `conventions/store.py` | 대상 리포의 `pumpkins/` 규칙 저장소 — 상태(디렉터리), 승인 게이트, 재실행 병합 |
+| `languages/` | C++ 문법 지식 + 리포별 확장자 설정(`pumpkins/settings.yml`) |
 
 ## 빠른 시작
 
@@ -242,37 +243,63 @@ out/
 컨벤션 학습 → 지적:
 
 ```bash
-# 1) 리포의 명명 관행을 학습 — 규칙 후보가 conventions/candidates/에 생깁니다
+# 1) 리포의 명명 관행을 학습 — 규칙 후보가 pumpkins/candidates/에 생깁니다
 pumpkins learn --repo /path/to/cpp/project
 
 # 2) 검수하고 승인 (승인 전까지는 리뷰에 적용되지 않습니다)
-git mv conventions/candidates/function-casing-lowerCamel.yml conventions/rules/
+git mv pumpkins/candidates/function-casing-lowerCamel.yml pumpkins/rules/
 
-# 3) 이후의 리뷰는 conventions/rules/를 자동으로 대조 (API 키 없이도 동작)
+# 3) 이후의 리뷰는 pumpkins/rules/를 자동으로 대조 (API 키 없이도 동작)
 pumpkins --repo /path/to/cpp/project --no-llm
 
 # LLM 없이, LLM에 전달될 통계 원본만 출력 (learn 디버깅용)
 pumpkins learn --repo /path/to/cpp/project --no-llm
 ```
 
-컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/conventions/`, 없으면 레거시 `conventions.yml`), `--no-conventions`(대조 끄기).
+컨벤션 관련 옵션: `--conventions PATH`(기본: `<repo>/pumpkins/`, 없으면 레거시 `conventions.yml`), `--no-conventions`(대조 끄기).
+
+### 확장자 판정을 프로젝트에 맞추기
+
+도구는 확장자를 보고 "이건 C++이구나" 판단하는데, 프로젝트마다 관행이 다릅니다. 필요할 때만
+`pumpkins/settings.yml`을 만들면 됩니다 (안 만들면 기본 목록으로 동작).
+
+```yaml
+languages:
+  cpp:
+    extra_extensions: [".ipp", ".tcc"]   # 이 프로젝트에선 이것도 C++
+    exclude_extensions: [".inl"]         # 이건 아님
+```
+
+`.h`가 C인지 C++인지, `.inc`가 소스인지 생성 데이터인지는 프로젝트마다 다릅니다. 실제로 `.tc`를
+YAML 테스트케이스로 쓰는 리포를 만났는데, 전역 목록으로는 그걸 소스로 오독합니다.
+
+추가한 확장자가 clang-tidy 단독 분석 대상이 되지는 않습니다 — `.ipp`를 추가하는 건 "헤더가 더
+있다"는 뜻이지 "`.cpp`가 더 있다"는 뜻이 아니니까요.
 
 ### 규칙 저장소 — `conventions/`
 
 ```
-conventions/
-├── config.yml       스캔 범위·임계선·통계 (규칙이 왜 이렇게 나왔는지의 근거)
-├── rules/           활성 — 리뷰가 적용하는 것은 여기뿐
-├── candidates/      판단 대기 — 리뷰에 영향 없음
-└── archive/         기각·은퇴 — learn이 다시 제안하지 않습니다
+pumpkins/
+├── settings.yml       사람이 씁니다 — 확장자 판정 등. learn이 건드리지 않습니다
+├── learn-report.yml   learn이 씁니다 — 지난 학습이 무엇을 보고 무엇을 버렸는지
+├── rules/             활성 — 리뷰가 적용하는 것은 여기뿐
+├── candidates/        판단 대기 — 리뷰에 영향 없음
+└── archive/           기각·은퇴 — learn이 다시 제안하지 않습니다
 ```
+
+디렉터리 이름을 도구 이름으로 둔 이유: `conventions` 같은 일반명사는 프로젝트가 자기 문서나
+네임스페이스에 이미 쓸 수 있어 부딪힙니다. 남의 프로젝트에 심는 디렉터리는 자기 이름을 써야 합니다.
+
+**파일이 둘로 나뉜 기준은 누가 쓰는가입니다.** `learn-report.yml`은 학습할 때마다 새로 쓰이는
+기록이라, 사람이 손으로 적은 값을 거기 두면 다음 학습에서 사라집니다. 손으로 적을 값은
+`settings.yml`에 두세요 — learn은 이 파일을 절대 건드리지 않습니다.
 
 **규칙의 상태는 파일이 놓인 디렉터리입니다.** 파일 안에 `status:` 필드를 두지 않았기 때문에 상태와 실제가 어긋날 수 없고, 상태 전이가 `git mv` 한 번이라 **누가 언제 승인했는지를 git이 자동으로 기록**합니다. 승인자 필드를 손으로 관리할 필요가 없습니다.
 
 **이력도 git이 관리합니다.** 규칙 하나가 파일 하나이므로:
 
 ```bash
-git log --follow conventions/rules/member-prefix-m.yml   # 이 규칙의 전체 이력
+git log --follow pumpkins/rules/member-prefix-m.yml   # 이 규칙의 전체 이력
 ```
 
 파일 안에 `history:` 배열을 두는 건 작성자 신원도 서명도 없는 git 재구현이라 하지 않았습니다. 파일에는 git이 줄 수 없는 것 — **결정의 이유(`reason`)** — 만 남깁니다.
@@ -314,7 +341,7 @@ pumpkins learn --repo . --include-tests
 규칙 파일마다 `scope`가 붙고, 손으로 고칠 수 있습니다. 비어 있으면 리포 전체 적용입니다.
 
 ```yaml
-# conventions/rules/member-prefix-m.yml
+# pumpkins/rules/member-prefix-m.yml
 id: member-prefix-m
 category: member_variable
 description: "멤버 변수는 `m` 접두사를 사용한다"

@@ -112,7 +112,7 @@ A split hypothesis is a question for a human, not a rule. It is never enforced.
 
 
 class ConventionRule(BaseModel):
-    """One adopted naming rule — persisted as one file under conventions/.
+    """One adopted naming rule — persisted as one file under the repo's pumpkins/.
 
     facet/value make the rule machine-checkable: the review pipeline compares
     an identifier's split_pattern() facets against them deterministically
@@ -147,7 +147,7 @@ class RejectedCandidate(BaseModel):
 class SplitHypothesis(BaseModel):
     """A guess at why a category failed the threshold: two groups, not noise.
 
-    Informational only — written to conventions/config.yml for a human to read.
+    Informational only — written to the repo's pumpkins/learn-report.yml for a human to read.
     Acting on it means either splitting the category in the extractor (when
     `checkable`) or writing a scoped rule by hand, both human decisions.
     """

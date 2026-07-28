@@ -59,7 +59,7 @@ Scan the diff for ownership and lifetime problems clang-tidy misses:
 
 1. **공통** (`_BASE_PROMPT`) — 역할, triage 규칙, 출력 계약
 2. **프로파일** — `profile.llm_focus`가 "FOCUS" 절로, 필요하면 최소 C++ 표준 절이 앞에
-3. **저장소 규칙** — `conventions/rules/`의 활성 규칙
+3. **저장소 규칙** — `pumpkins/rules/`의 활성 규칙
 
 ## 새 diff 소스 추가 (예: GitHub PR)
 
@@ -129,10 +129,11 @@ Stage 4의 계약은 `render_*(result: ReviewResult) -> str`입니다.
 
 ## 확장자 매핑 (`languages/__init__.py`)
 
-리포가 `.pumpkins.yml`로 덮어씁니다. 새 축(예: 언어별 파서 선택)을 넣으려면 그 파일의 스키마를
-확장하세요. 두 가지를 지키세요:
+리포가 `pumpkins/settings.yml`로 덮어씁니다. 새 축(예: 언어별 파서 선택)을 넣으려면 그 파일의
+스키마를 확장하세요. 두 가지를 지키세요:
 
-- **`conventions/config.yml`에 넣지 마세요** — `learn`이 매번 덮어써서 손으로 적은 설정이 사라집니다.
+- **`pumpkins/learn-report.yml`에 넣지 마세요** — `learn`이 매번 덮어써서 손으로 적은 설정이 사라집니다.
+  같은 디렉터리 안이지만 소유자가 다릅니다: `learn-report.yml`은 learn이, `settings.yml`은 사람이 씁니다.
 - **추가한 확장자를 TU 집합에 자동 편입시키지 마세요** — 헤더를 clang-tidy에 단독으로 먹이면
   전부 컴파일 에러가 됩니다.
 

@@ -1,6 +1,6 @@
 """Language syntax layer, and the per-repo overrides that decide what to read.
 
-`.pumpkins.yml` at the repo root, hand-written and committed:
+`pumpkins/settings.yml` in the target repo, hand-written and committed:
 
     languages:
       cpp:
@@ -12,10 +12,10 @@ in different projects. `.h` may be C or C++; `.inc`/`.ipp`/`.tcc` are C++ in som
 repos and generated data in others; a repo was seen using `.tc` for YAML test
 cases, which a global C++ list would have mis-read as source.
 
-Why a separate file rather than conventions/config.yml: that file is rewritten by
-`learn`, so a hand-edited section there would be destroyed on the next run — the
-exact defect the rule store was restructured to fix. And the review pipeline needs
-this mapping even when run with `--no-conventions`.
+Why `settings.yml` and not the neighbouring `learn-report.yml`: `learn` rewrites that one
+on every run, so a hand-edited section there would be destroyed — the exact defect
+the rule store was restructured to fix. Reading it needs no rules loaded, so this
+also works under `--no-conventions`.
 """
 
 from __future__ import annotations
@@ -23,11 +23,16 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from pumpkins.config import PUMPKINS_DIRNAME
 from pumpkins.languages import cpp
 
 log = logging.getLogger(__name__)
 
-CONFIG_FILENAME = ".pumpkins.yml"
+SETTINGS_FILENAME = "settings.yml"
+
+
+def settings_path(repo: Path) -> Path:
+    return repo / PUMPKINS_DIRNAME / SETTINGS_FILENAME
 
 
 def _normalize(extensions: object) -> set[str]:
@@ -38,7 +43,7 @@ def _normalize(extensions: object) -> set[str]:
 
 def _overrides(repo: Path, language: str) -> tuple[set[str], set[str]]:
     """(added, removed) extensions declared by the repo, if it declares any."""
-    path = repo / CONFIG_FILENAME
+    path = settings_path(repo)
     if not path.is_file():
         return set(), set()
     try:
@@ -62,8 +67,9 @@ def cpp_extensions(repo: Path | None = None) -> frozenset[str]:
     added, removed = _overrides(repo, cpp.NAME)
     if added or removed:
         log.info(
-            "%s: C++ extensions %s%s",
-            CONFIG_FILENAME,
+            "%s/%s: C++ extensions %s%s",
+            PUMPKINS_DIRNAME,
+            SETTINGS_FILENAME,
             f"+{sorted(added)}" if added else "",
             f" -{sorted(removed)}" if removed else "",
         )

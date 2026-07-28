@@ -29,6 +29,6 @@ from pumpkins.conventions.store import (
     load_status,
     reconcile,
     rule_filename,
-    write_config,
+    write_scan_report,
     write_rule,
 )

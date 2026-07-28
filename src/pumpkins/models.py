@@ -70,7 +70,7 @@ class DetectorKind(str, Enum):
     """Who judged a finding."""
 
     clang_tidy = "clang-tidy"
-    convention = "convention"  # deterministic match against conventions/rules/
+    convention = "convention"  # deterministic match against the repo's pumpkins/rules/
     llm = "llm"
 
 
@@ -145,7 +145,7 @@ class ReviewResult(BaseModel):
     temperature: float | None = None  # sampling setting also changes the result
     conventions_loaded: int = 0  # active rules enforced this run
     # Candidates awaiting a human decision. Reported because a rule sitting in
-    # conventions/candidates/ looks learned but is deliberately not enforced —
+    # pumpkins/candidates/ looks learned but is deliberately not enforced —
     # without saying so, its absence from the findings reads as a pass.
     conventions_pending: int = 0
     total_diagnostics: int = 0

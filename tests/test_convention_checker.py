@@ -128,7 +128,7 @@ def test_checker_without_checkable_rules():
 
 
 def test_store_roundtrip(tmp_path):
-    """A rule written to conventions/rules/ comes back checkable."""
+    """A rule written to pumpkins/rules/ comes back checkable."""
     root = tmp_path / "conventions"
     for rule in RULES:
         write_rule(root, "active", StoredRule(**rule.model_dump()))

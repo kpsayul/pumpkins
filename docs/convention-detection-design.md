@@ -25,8 +25,8 @@
 리뷰 시점이 아니라 **미리** 리포 전체를 훑어 규칙을 뽑아둔다.
 
 ```
-[1회성/주기적]  리포 스캔 → LLM이 관행 추출 → conventions/ 규칙 저장소 생성
-[리뷰 시마다]   diff + conventions/rules/ → 위반 판정
+[1회성/주기적]  리포 스캔 → LLM이 관행 추출 → pumpkins/ 규칙 저장소 생성
+[리뷰 시마다]   diff + pumpkins/rules/ → 위반 판정
 ```
 
 - 추출 예: "멤버 변수 187개 중 172개(92%)가 `m_` 접두사 → 규칙 채택", "함수명 94%가 lowerCamelCase"
@@ -52,7 +52,7 @@ GitHub API로 과거 리뷰 코멘트를 수집해 "이 팀 리뷰어들이 실�
 
 ### 채택한 조합
 
-**A를 본체로, B를 보조로.** A가 만든 `conventions/`의 규칙을 근거로 지적하되,
+**A를 본체로, B를 보조로.** A가 만든 `pumpkins/`의 규칙을 근거로 지적하되,
 프로파일에 없는 새 패턴은 B 방식으로 diff 문맥에서 잡아 **"규칙 후보"로 프로파일에 역제안**.
 C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 
@@ -60,7 +60,7 @@ C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 
 ### (1) 규칙은 눈에 보이는 산출물로
 
-`conventions/` 디렉터리가 **리포에 커밋되는 구조**로 간다 (규칙당 파일 하나).
+`pumpkins/` 디렉터리가 **리포에 커밋되는 구조**로 간다 (규칙당 파일 하나).
 
 - 사용자가 규칙을 승인/수정/삭제 가능 → 오탐이 나도 "규칙을 고치면 되는" 경험.
 - 블랙박스 지적은 사용자가 금방 꺼버린다. 근거를 보여주는 것이 생존 조건.
@@ -97,7 +97,7 @@ C는 GitHub 연동 단계(제품화 이후)의 강화 재료로 미룬다.
 
 | 단계 | 모델 | 근거 |
 |---|---|---|
-| **`pumpkins learn`** (컨벤션 추출) | `claude-sonnet-5` | 설계상(방안 A) 식별자 추출은 기계적으로 하고 LLM엔 **통계 요약만** 줘서 규칙 여부를 판정시킨다 — 구조화 입력→구조화 출력의 패턴 분류라 Opus급 지능 불필요. 리포당 1회성이고 결과가 `conventions/`에 규칙당 파일로 남아 사람이 검수 가능. **Batch API(50% 할인)** 는 learn이 서버측/스케줄 실행으로 옮겨질 때 적용 — 현재 CLI는 사용자가 터미널에서 기다리므로 동기 호출 |
+| **`pumpkins learn`** (컨벤션 추출) | `claude-sonnet-5` | 설계상(방안 A) 식별자 추출은 기계적으로 하고 LLM엔 **통계 요약만** 줘서 규칙 여부를 판정시킨다 — 구조화 입력→구조화 출력의 패턴 분류라 Opus급 지능 불필요. 리포당 1회성이고 결과가 `pumpkins/`에 규칙당 파일로 남아 사람이 검수 가능. **Batch API(50% 할인)** 는 learn이 서버측/스케줄 실행으로 옮겨질 때 적용 — 현재 CLI는 사용자가 터미널에서 기다리므로 동기 호출 |
 | **`pumpkins review`** (diff 리뷰/triage) | `claude-opus-4-8` (현행 유지) | 노이즈 필터·심각도 판정·diff에서 미묘한 패턴 직접 탐지 — 애매한 문맥 추론이 핵심이고, **precision = 생존**인 단계라 지능이 돈값을 함. diff는 보통 작아 호출당 비용 부담 낮음 |
 | (실험) learn 다운그레이드 | `claude-haiku-4-5` | learn 프롬프트가 안정되면 Haiku까지 내려 품질 비교 — Opus 대비 1/5 가격 |
 
@@ -197,13 +197,13 @@ learn의 실제 토큰 사용량(측정):
      [conventions/store.py](../src/pumpkins/conventions/store.py)(L3: 기존 결정과 병합 + 규칙당 파일 기록)
    - `--no-llm`으로 LLM에 전달될 통계 원본을 그대로 볼 수 있음 (파이프라인 디버깅)
 2. ✅ **리뷰 파이프라인에 convention 대조 연결 (구현됨)** — diff의 추가 라인에서 선언된 식별자를
-   `conventions/rules/`의 활성 규칙(facet/value)과 대조해 질문형 finding 출력.
+   `pumpkins/rules/`의 활성 규칙(facet/value)과 대조해 질문형 finding 출력.
    - 구현: [conventions/checker.py](../src/pumpkins/conventions/checker.py) — **결정적 대조라 API 키 없이도 동작** (CI-safe).
-     리뷰 실행 시 `<repo>/conventions/`(또는 레거시 `conventions.yml`)이 있으면 자동 적용 (`--conventions PATH` / `--no-conventions`)
+     리뷰 실행 시 `<repo>/pumpkins/`(또는 레거시 `conventions.yml`)이 있으면 자동 적용 (`--conventions PATH` / `--no-conventions`)
    - 규칙에 기계 대조용 `facet`(prefix/suffix/casing) + `value` 필드 추가 — learn의 통계 키와 같은 어휘 사용
    - 질문형 + 근거 제시: *"member_variable 187개 중 92%가 이 관행을 따릅니다 … 여기만 다르게 한 이유가 있을까요?"*
    - **규칙 scope (구현됨)** — `paths`/`exclude_paths`/`extensions`로 파일별 적용 범위 제한. §3-(2)의 "디렉터리 단위 분리" 결정이 여기서 실체화됨
-   - **규칙 저장소 + 승인 워크플로 (구현됨)** — `conventions/{rules,candidates,archive}/`. 상태=디렉터리, 이력=git, 재실행 시 결정 보존([store.py](../src/pumpkins/conventions/store.py))
+   - **규칙 저장소 + 승인 워크플로 (구현됨)** — `pumpkins/{rules,candidates,archive}/`. 상태=디렉터리, 이력=git, 재실행 시 결정 보존([store.py](../src/pumpkins/conventions/store.py))
    - **`facet: other` 규칙의 LLM 판정 (구현됨 — 방안 B)** — 정규식으로 표현 못 해 파일에 기록만 되고
      체커가 건너뛰던 규칙을 리뷰 프롬프트에 넣어 LLM이 판정. **승인은 받아놓고 아무도 검사하지 않던
      상태**가 해소됨. 실측: spdlog PR #2667에서 사람이 직접 쓴 규칙(*"조건부 컴파일로 갈린 공개 API에서
@@ -214,7 +214,7 @@ learn의 실제 토큰 사용량(측정):
    - ✅ 주입 검증(Track A, 키 불필요): 통제 fixture에 위반 5건+무해 3건 주입 → recall/precision 채점 → `verification/results/` 채점표. 현재 **recall 100% / precision 100%**
    - ✅ CLI 스모크: `--no-llm` 전체 파이프라인 리포트 확인
    - ✅ **scope 격리 검증**: `legacy/`에 같은 위반을 심고 `exclude_paths`로 제외 → legacy는 침묵하고 src의 5건은 유지되는지. 뒤쪽 조건이 없으면 scope는 그냥 체커를 끄는 스위치일 뿐이라 둘 다 확인함
-   - ✅ **저장소 포맷 등가성**: 레거시 `conventions.yml`과 `conventions/` 저장소가 같은 지적을 내는지 + `candidates/`가 리뷰에 적용되지 않는지. 픽스처를 일부러 레거시로 남겨 뒀으므로 [1]~[3]이 옛 경로를, [4]가 신규 경로를 덮는다
+   - ✅ **저장소 포맷 등가성**: 레거시 `conventions.yml`과 `pumpkins/` 저장소가 같은 지적을 내는지 + `candidates/`가 리뷰에 적용되지 않는지. 픽스처를 일부러 레거시로 남겨 뒀으므로 [1]~[3]이 옛 경로를, [4]가 신규 경로를 덮는다
    - ⏭️ learn 품질 / 모델 비교(§4 확정용) / 리뷰 LLM e2e: **키 필요 — 자동 skip되는 스켈레톤**, 키 확보 후 각 함수 내부만 채우면 됨 (해야 할 일이 docstring에 명시돼 있음)
    - **한계 (§5.5가 증명함): 픽스처 100%는 제품 품질을 보장하지 않는다.** 실제 리포 두 곳에서 규칙이 틀렸는데도 이 하네스는 만점이었다. 다음 우선순위는 오픈소스 리포를 하네스에 넣어 **정답이 공개된 스타일 가이드**(fmt=snake_case, googletest=Google style)와 학습 결과를 비교하는 것
 4. 통과하면 GitHub PR 코멘트 봇 + 방안 C(리뷰 이력 마이닝) 검토.

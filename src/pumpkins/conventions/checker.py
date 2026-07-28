@@ -79,7 +79,7 @@ _PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "m": 1, "k": 1, "s": 1, "g": 1}
 def load_conventions(path: Path) -> list[ConventionRule]:
     """Load the rules the review should enforce.
 
-    `path` is either a `conventions/` store (only `rules/` is enforced — pending
+    `path` is either a `pumpkins/` store (only `rules/` is enforced — pending
     candidates deliberately have no effect) or a legacy single `conventions.yml`.
     """
     rules = load_active_rules(path)

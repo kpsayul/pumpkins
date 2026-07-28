@@ -106,9 +106,12 @@ MIN_RULE_CONSISTENCY = 0.85
 
 # Where `pumpkins learn` writes its human-reviewable artifact, relative to the
 # target repo root — meant to be committed alongside the code (§3-(1)).
-# A directory, one file per rule, with the rule's status expressed by which
-# subdirectory it sits in (conventions/store.py explains why).
-CONVENTIONS_DIRNAME = "conventions"
+# A directory in the *target* repo, one file per rule, with each rule's status
+# expressed by which subdirectory it sits in (conventions/store.py explains why).
+# Named after the tool rather than after "conventions": the latter is a word
+# repos already use for their own docs and namespaces, and a tool that plants a
+# directory in someone else's project should not squat on a generic name.
+PUMPKINS_DIRNAME = "pumpkins"
 # Pre-directory layout. Still *read* so existing repos keep working; never written.
 CONVENTIONS_FILENAME = "conventions.yml"
 
