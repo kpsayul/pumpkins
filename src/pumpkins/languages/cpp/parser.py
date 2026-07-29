@@ -85,6 +85,26 @@ _MEMBER_RE = re.compile(
 
 _STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"' + r"|'(?:\\.|[^'\\])*'")
 
+# Object-like macro definitions the repo declares: `#define NAME` / `#define NAME body`.
+# The negative lookahead excludes function-like macros (`#define MIN(a,b) …`), which
+# never stand where a class name would.
+#
+# This exists because the C++ grammar is genuinely ambiguous without it:
+# `class Foo bar;` is valid C++ (a variable `bar` of type `class Foo`), and
+# `class FOO_API Bar;` has the exact same shape. Nothing in the text distinguishes
+# them — only knowing that FOO_API is a macro does. So we ask the repo instead of
+# guessing from the shape of the name.
+#
+# The lookahead excludes `(` *and* word characters: without the `\w`, the regex
+# happily backtracks and reads `#define MIN(a,b)` as defining `MI`.
+DEFINE_RE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)(?![\w(])")
+
+
+def object_like_macros(text: str) -> set[str]:
+    """Names this source `#define`s as object-like macros."""
+    return {m.group(1) for m in (DEFINE_RE.match(l) for l in text.splitlines()) if m}
+
+
 # `#include <a/b.h>` / `#include "a/b.h"` → the path between the brackets.
 # Regex rather than AST on purpose: an include line is lexically unambiguous, and
 # the layering check must keep working on machines where tree-sitter is broken —

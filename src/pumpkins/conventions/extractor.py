@@ -23,7 +23,11 @@ from typing import Iterator
 
 from pydantic import BaseModel, Field
 
-from pumpkins.config import LEARN_SKIP_DIRS, LEARN_TEST_DIRS
+from pumpkins.config import (
+    LEARN_SKIP_DIRS,
+    LEARN_TEST_DIRS,
+    PARSE_HEALTH_WARN_RATIO,
+)
 from pumpkins.conventions.scope import normalize_path, path_matches
 from pumpkins.languages import cpp_extensions
 from pumpkins.languages.cpp import ast as cpp_ast, naming, parser as cpp_parser
@@ -134,19 +138,37 @@ def detect_split_signal(
 
 # ------------------------------------------------------------------ scanning
 
-def _scan_file(path: Path) -> Iterator[tuple[str, str]]:
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.debug("skipping unreadable file %s: %s", path, exc)
+        return None
+
+
+def _scan_file(
+    path: Path, macros: frozenset[str] = frozenset(), health: cpp_ast.ScanHealth | None = None
+) -> Iterator[tuple[str, str]]:
     """Yield (category, identifier) pairs from one file.
 
     Uses the tree-sitter AST scan (accurate on templates/macros/multi-line
     declarations); falls back to the regex scanner only if tree-sitter is
-    unavailable (a broken native install), so learn degrades rather than dies."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        log.debug("skipping unreadable file %s: %s", path, exc)
+    unavailable (a broken native install), so learn degrades rather than dies.
+
+    `macros` are the repo's own `#define` names, which is what lets a class
+    header like `class FOO_API Bar` resolve without guessing. `health` collects
+    how well each file parsed — see cpp/ast.ParseReport for why that is counted.
+    """
+    text = _read(path)
+    if text is None:
         return
-    use_ast = cpp_ast.require("learn scan")
-    yield from (cpp_ast.scan(text) if use_ast else cpp_parser.scan(text))
+    if not cpp_ast.require("learn scan"):
+        yield from cpp_parser.scan(text)
+        return
+    identifiers, report = cpp_ast.scan_with_report(text, macros)
+    if health is not None and report is not None:
+        health.add(str(path), report)
+    yield from identifiers
 
 
 def select_files(
@@ -185,6 +207,20 @@ def extract_stats(
     include_tests: bool = False,
 ) -> list[CategoryStats]:
     """Scan a repo and build per-category naming statistics."""
+    return extract_stats_with_health(repo, include, exclude, include_tests)[0]
+
+
+def extract_stats_with_health(
+    repo: Path,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    include_tests: bool = False,
+) -> tuple[list[CategoryStats], cpp_ast.ScanHealth]:
+    """`extract_stats`, plus how well the repo parsed.
+
+    Kept as a separate entry point so the statistics contract does not change,
+    but the CLI uses this one: a statistic whose parse health nobody looked at
+    is a number with an unknown denominator."""
     counters: dict[str, dict[str, Counter]] = {
         cat: {"prefix": Counter(), "suffix": Counter(), "casing": Counter()}
         for cat in CATEGORIES
@@ -201,9 +237,15 @@ def extract_stats(
         log.warning("repo has %d C++ files — scanning first %d", len(files), MAX_FILES)
         files = files[:MAX_FILES]
 
+    # Ask the repo which names are macros before reading any class header. Doing
+    # this first is the whole point: `class Foo bar;` and `class FOO_API Bar;`
+    # are the same shape, and only the repo's own #defines tell them apart.
+    macros = collect_macros(repo, files)
+    health = cpp_ast.ScanHealth()
+
     for path in files:
         directory = str(path.relative_to(repo).parent)
-        for category, name in _scan_file(path):
+        for category, name in _scan_file(path, macros, health):
             per_dir[directory] += 1
             prefix, suffix, casing = split_pattern(name)
             counters[category]["prefix"][prefix] += 1
@@ -253,4 +295,38 @@ def extract_stats(
     # that is how fmt's bundled test/gtest/ was caught.
     for directory, count in per_dir.most_common(8):
         log.info("  %6d identifier(s) from %s/", count, directory)
-    return stats
+
+    health.finalize()
+    _report_health(health)
+    return stats, health
+
+
+def collect_macros(repo: Path, files: list[Path] | None = None) -> frozenset[str]:
+    """Object-like macro names the repo defines, for resolving class headers."""
+    if files is None:
+        files = select_files(repo)
+    texts = (t for t in (_read(p) for p in files) if t is not None)
+    macros = cpp_ast.collect_macros(texts)
+    log.debug("collected %d object-like macro name(s) from the repo", len(macros))
+    return macros
+
+
+def _report_health(health: cpp_ast.ScanHealth) -> None:
+    """Say how well the repo parsed — loudly only when it cost data.
+
+    Statistics are only as good as the reading that produced them, and a parser
+    that misreads quietly is indistinguishable from one that works. This is the
+    number that makes the next parsing bug visible on the first run instead of
+    on the day somebody happens to eyeball the output.
+
+    It warns on unresolved class headers, never on raw parse errors: the latter
+    are template-grammar limits that fire on every serious C++ repo and cost
+    nothing, and a warning that is always on is a warning nobody reads.
+    """
+    if health.needs_attention or health.error_ratio >= PARSE_HEALTH_WARN_RATIO:
+        level = log.warning if health.needs_attention else log.info
+        level("parse health: %s", health.summary())
+        for path, unresolved, errors in health.worst:
+            log.info("  class 판정불가 %2d · 오류 %3d  %s", unresolved, errors, path)
+    else:
+        log.info("parse health: %s", health.summary())

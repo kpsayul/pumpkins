@@ -375,6 +375,24 @@ def _format_reconciliation(root, rec, written, accept_all: bool) -> str:
     return "\n".join(lines)
 
 
+def _format_parse_health(health, root) -> str:
+    """How much of the repo the parser could not read with confidence.
+
+    Shown because statistics inherit the quality of the reading behind them, and
+    a parser that misreads *quietly* looks exactly like one that works. An export
+    macro once made a third of a repo's members invisible; nothing said so.
+    """
+    lines = ["", f"코드 판독: {health.summary()}"]
+    for path, unresolved, errors in health.worst:
+        lines.append(f"  class 판정불가 {unresolved:2d} · 오류 {errors:3d}   {path}")
+    lines.append(
+        "  이 파일들에는 이 파서가 모르는 매크로나 문법이 있을 수 있습니다 — "
+        "해당 클래스의 멤버가 통계에서 빠졌을 수 있습니다."
+    )
+    lines.append(f"  전문: {root.name}/learn-report.yml 의 scan.parse_health")
+    return "\n".join(lines)
+
+
 def _format_triage(outcome) -> str:
     """What the cheap first pass looked at and where it sent the expensive one.
 
@@ -466,7 +484,7 @@ def run_learn(argv: list[str]) -> int:
         RuleInferrer,
         RuleScope,
         apply,
-        extract_stats,
+        extract_stats_with_health,
         load_all,
         reconcile,
         render_stats_yaml,
@@ -485,7 +503,7 @@ def run_learn(argv: list[str]) -> int:
         scanned = len(
             select_files(args.repo, args.include, args.exclude, args.include_tests)
         )
-        stats = extract_stats(
+        stats, health = extract_stats_with_health(
             args.repo, args.include, args.exclude, args.include_tests
         )
         if sum(s.total for s in stats) == 0:
@@ -549,8 +567,11 @@ def run_learn(argv: list[str]) -> int:
             root, args.repo, args.model, stats, scan_scope, scanned,
             rejected=[r.model_dump() for r in result.rejected],
             split_hypotheses=[s.model_dump() for s in result.split_hypotheses],
+            health=health,
         )
         print(_format_reconciliation(root, rec, written, args.accept_all))
+        if health.needs_attention:
+            print(_format_parse_health(health, root))
         if outcome is not None and outcome.triaged:
             print(_format_triage(outcome))
         if report is not None:

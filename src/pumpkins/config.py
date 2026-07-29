@@ -116,6 +116,13 @@ COMPILE_DB_CANDIDATES = [".", "build", "out", "cmake-build-debug", "cmake-build-
 MIN_RULE_OCCURRENCES = 20
 MIN_RULE_CONSISTENCY = 0.85
 
+# Share of files that may fail to parse cleanly before the scan warns rather than
+# just reports. Statistics inherit the quality of the reading that produced them,
+# and a parser that misreads *quietly* is indistinguishable from one that works —
+# an export macro made a third of one repo's members invisible and the tool said
+# nothing. This is the number that makes the next such bug visible on run one.
+PARSE_HEALTH_WARN_RATIO = 0.05
+
 # Where `pumpkins learn` writes its human-reviewable artifact, relative to the
 # target repo root — meant to be committed alongside the code (§3-(1)).
 # A directory in the *target* repo, one file per rule, with each rule's status

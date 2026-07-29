@@ -43,7 +43,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from pumpkins.config import MIN_RULE_CONSISTENCY, MIN_RULE_OCCURRENCES
-from pumpkins.conventions.extractor import casing_matches, select_files, split_pattern
+from pumpkins.conventions.extractor import (
+    casing_matches,
+    collect_macros,
+    select_files,
+    split_pattern,
+)
 from pumpkins.conventions.learner import ConventionRule, RuleCheck
 from pumpkins.conventions.proposer import (
     InferredRule,
@@ -143,10 +148,10 @@ def verify(
         return _verify_include_direction(repo, check, files)
 
     if check.kind == "member_ownership":
-        return _verify_member_ownership(check, files)
+        return _verify_member_ownership(check, files, collect_macros(repo, files))
 
     if check.kind == "base_class":
-        return _verify_base_class(check, files)
+        return _verify_base_class(check, files, collect_macros(repo, files))
 
     if check.kind == "return_type":
         # Structural: needs the AST. Without tree-sitter we cannot measure it, so
@@ -156,6 +161,7 @@ def verify(
         if not want or not cpp_ast.require("structural rule verification"):
             return None
         prefix = check.name_prefix
+        macros = collect_macros(repo, files)
         # Dedup by name: a function declared in a header and defined in a source
         # is one function, not two — counting both would inflate the occurrence
         # gate. Prefer an informative return type over a bare `auto`/empty one.
@@ -165,7 +171,7 @@ def verify(
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            for fn in cpp_ast.functions(text):
+            for fn in cpp_ast.functions(text, macros):
                 if prefix and not fn.name.startswith(prefix):
                     continue
                 prev = seen.get(fn.name)
@@ -230,7 +236,9 @@ def _verify_include_direction(repo: Path, check: RuleCheck, files: list[Path]) -
     return CheckResult(clean, len(scoped))
 
 
-def _verify_member_ownership(check: RuleCheck, files: list[Path]) -> CheckResult | None:
+def _verify_member_ownership(
+    check: RuleCheck, files: list[Path], macros: frozenset[str]
+) -> CheckResult | None:
     """Ownership: of the members that hold a pointer, how many hold it the stated way.
 
     The denominator is pointer-holding members only (ast.MemberDecl.holds_pointer).
@@ -250,7 +258,7 @@ def _verify_member_ownership(check: RuleCheck, files: list[Path]) -> CheckResult
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for member in cpp_ast.members(text):
+        for member in cpp_ast.members(text, macros):
             if not member.holds_pointer:
                 continue
             total += 1
@@ -258,7 +266,9 @@ def _verify_member_ownership(check: RuleCheck, files: list[Path]) -> CheckResult
     return CheckResult(matches, total)
 
 
-def _verify_base_class(check: RuleCheck, files: list[Path]) -> CheckResult | None:
+def _verify_base_class(
+    check: RuleCheck, files: list[Path], macros: frozenset[str]
+) -> CheckResult | None:
     """Hierarchy: of the classes named like the rule says, how many derive as it says.
 
     Added because a real run asked for it: inference on yaml-cpp proposed "예외
@@ -281,7 +291,7 @@ def _verify_base_class(check: RuleCheck, files: list[Path]) -> CheckResult | Non
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for cls in cpp_ast.classes(text):
+        for cls in cpp_ast.classes(text, macros):
             if not cls.name.endswith(suffix):
                 continue
             # A forward declaration has no bases; a later definition does. Keep

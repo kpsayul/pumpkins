@@ -22,9 +22,10 @@ node API (`type`, `child_by_field_name`, `text`).
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterable, Iterator
+
+from pumpkins.languages.cpp import parser as cpp_parser
 
 log = logging.getLogger(__name__)
 
@@ -152,41 +153,262 @@ def _text(node) -> str:
     return node.text.decode("utf-8", "replace")
 
 
-# An export/visibility macro between `class` and the class name:
-#   class YAML_CPP_API Exception : public std::runtime_error { … };
-# tree-sitter has no preprocessor, so it reads the MACRO as the class name, the
-# real name as a syntax ERROR, and the class body as a function body — which
-# means the class is misnamed AND every one of its members disappears. The
-# pattern is near-universal in libraries that build a DLL (FMT_API, SPDLOG_API,
-# *_EXPORT), so leaving it alone silently corrupts naming statistics for exactly
-# the repos most likely to have conventions worth learning.
+# ------------------------------------------- macros in class headers (recovery)
 #
-# The lookahead requires a second identifier before `:`/`{`/`;`, so a class
-# genuinely named in caps (`class ERROR {`) is untouched.
-_EXPORT_MACRO_RE = re.compile(
-    r"\b(?:class|struct)\s+([A-Z][A-Z0-9_]{2,})\s+(?=[A-Za-z_]\w*\s*[:{;])"
-)
+# tree-sitter has no preprocessor, so an export/visibility macro in a class
+# header derails it:
+#
+#     class YAML_CPP_API Exception : public std::runtime_error { int m_x; };
+#
+# It reads the MACRO as the class name; the class is misnamed AND every member
+# disappears (the body is taken for a function body, so members become locals).
+# The pattern is near-universal in libraries that ship a DLL — FMT_API,
+# SPDLOG_API, *_EXPORT — so the repos most likely to have conventions worth
+# learning are exactly the ones whose statistics were quietly wrong.
+#
+# Three shapes, and they fail differently — which is why there is no single
+# clever pattern that covers them:
+#
+#   class M Foo : Base { … }   → tree-sitter reports an ERROR node
+#   class M Foo { … }          → NO error at all. Silently a function_definition
+#   class M Foo;               → NO error, and INDISTINGUISHABLE from the valid
+#                                C++ `class Foo bar;` (a variable of class type)
+#
+# The last one settles the design: the grammar is genuinely ambiguous here, so
+# no amount of shape-matching on the text can resolve it. The only real signal is
+# whether the token is a macro — which the repo itself states, in its `#define`s.
+# So we ask the repo (`collect_macros`) rather than guessing from the name.
+#
+# For the first two shapes we do not need to guess either: the parse tree proves
+# the misparse. `class M Foo { … }` becomes a function_definition whose declarator
+# is a bare identifier, and a function definition cannot have one — a real one
+# needs a parameter list. That is a proof, not a heuristic.
+
+_CLASSISH = ("class_specifier", "struct_specifier")
 
 
-def _strip_export_macros(source: str) -> str:
-    """Blank out export macros in class headers so the declaration parses.
+def _blank_span(source: str, spans: list[tuple[int, int]]) -> str:
+    """Replace byte spans with spaces, preserving newlines.
 
-    Replaced with spaces rather than deleted: byte offsets and line numbers must
-    survive, because a structural finding reports the line it was found on.
+    Spaces rather than deletion so byte offsets and line numbers survive — a
+    structural finding reports the line it was found on, and a shifted line
+    number points the reviewer at the wrong code.
     """
-    return _EXPORT_MACRO_RE.sub(
-        lambda m: m.group(0)[: m.start(1) - m.start(0)]
-        + " " * len(m.group(1))
-        + m.group(0)[m.end(1) - m.start(0):],
-        source,
-    )
+    data = bytearray(source.encode("utf-8", "replace"))
+    for start, end in spans:
+        for i in range(start, min(end, len(data))):
+            if data[i] != 0x0A:  # keep '\n'
+                data[i] = 0x20
+    return data.decode("utf-8", "replace")
 
 
-def _parse(source: str):
-    """Parse tree for a C++ source, after making it parseable. None if no parser."""
+def _macro_span(node, macros: frozenset[str]) -> tuple[int, int] | None:
+    """Byte span to blank when this node is `class <macro> Name …`, else None.
+
+    Accepted on either of two independent grounds:
+      - the token is a macro the repo `#define`s (settles the ambiguous case), or
+      - the tree proves a misparse (a function_definition whose declarator is a
+        bare identifier — not expressible in valid C++).
+    """
+    if node.type not in ("function_definition", "declaration"):
+        return None
+    kids = node.children
+    if not kids or kids[0].type not in _CLASSISH:
+        return None
+    spec = kids[0]
+    if spec.child_by_field_name("body") is not None:
+        return None  # a real class definition; nothing was misread
+    name = spec.child_by_field_name("name")
+    if name is None or len(kids) < 2:
+        return None
+    following = kids[1]
+    known_macro = _text(name) in macros
+
+    # Where the real class name sits depends on which way the parse went wrong:
+    #   ERROR            `class M Foo : Base { … }`  — choked on the real name
+    #   init_declarator  `class M Foo : Base {}`     — read as a variable + init
+    #   identifier       `class M Foo { … }` / `class M Foo;`
+    if following.type == "ERROR":
+        real = next((c for c in following.children if c.type == "identifier"), None)
+        return (name.start_byte, real.start_byte) if real is not None else None
+
+    if following.type == "init_declarator":
+        real = following.children[0] if following.children else None
+        if real is None or real.type != "identifier":
+            return None
+        # A parse error inside the declarator proves this is not the variable
+        # declaration it was read as; otherwise fall back to the macro list.
+        if following.has_error or known_macro:
+            return (name.start_byte, real.start_byte)
+        return None
+
+    if following.type == "identifier":
+        # A function definition cannot have a bare identifier as its declarator —
+        # a real one needs a parameter list. So this shape is not valid C++, which
+        # makes it a proof rather than a guess.
+        proven = node.type == "function_definition" and any(
+            k.type == "compound_statement" for k in kids
+        )
+        if proven or known_macro:
+            return (name.start_byte, following.start_byte)
+    return None
+
+
+def _recovery_spans(node, macros: frozenset[str], out: list[tuple[int, int]]) -> None:
+    span = _macro_span(node, macros)
+    if span is not None:
+        out.append(span)
+    for child in node.children:
+        _recovery_spans(child, macros, out)
+
+
+def _error_count(node) -> int:
+    if not node.has_error:
+        return 0
+    total = 1 if (node.type == "ERROR" or node.is_missing) else 0
+    return total + sum(_error_count(c) for c in node.children)
+
+
+@dataclass(frozen=True)
+class ParseReport:
+    """How well one source parsed — after recovery.
+
+    Two numbers, because the failures that hurt most are the quiet ones.
+    `error_nodes` is what the parser admits it could not read. `unresolved` is
+    what it read *confidently and possibly wrongly*: a `class X Y` we could not
+    settle, which is either an unknown macro (statistics silently wrong) or a
+    genuine `class Foo bar;` declaration (fine). Either way it is a place where
+    the tool is guessing, and a guess nobody counts is how 51 members went
+    missing from a repo's statistics without anyone noticing.
+    """
+
+    error_nodes: int = 0
+    unresolved: int = 0
+
+    @property
+    def clean(self) -> bool:
+        return self.error_nodes == 0 and self.unresolved == 0
+
+
+@dataclass
+class ScanHealth:
+    """Parse health across a whole scan, and the files that account for it.
+
+    The two counts are kept apart because only one of them costs data, and
+    conflating them makes the warning useless. Measured on yaml-cpp:
+
+        unresolved class headers  25 → 0   (this is what lost 51 members)
+        parse errors             337 → 235 (the rest is SFINAE templates)
+
+    Those 235 are real limits of the grammar, sitting inside template parameter
+    lists, and they cost nothing — every class in that file still came out
+    correctly. Warning about them would fire on every template-heavy C++ repo
+    forever, which trains people to ignore the one warning that matters.
+    """
+
+    files: int = 0
+    error_nodes: int = 0
+    files_with_errors: int = 0
+    unresolved: int = 0
+    files_with_unresolved: int = 0
+    worst: list[tuple[str, int, int]] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.worst is None:
+            self.worst = []
+
+    def add(self, path: str, report: ParseReport) -> None:
+        self.files += 1
+        self.error_nodes += report.error_nodes
+        self.unresolved += report.unresolved
+        self.files_with_errors += report.error_nodes > 0
+        self.files_with_unresolved += report.unresolved > 0
+        if not report.clean:
+            self.worst.append((path, report.unresolved, report.error_nodes))
+
+    def finalize(self, limit: int = 5) -> None:
+        # Unresolved first: a file that lost a class matters more than one with
+        # a hundred harmless template errors.
+        self.worst = sorted(self.worst, key=lambda w: (-w[1], -w[2]))[:limit]
+
+    @property
+    def error_ratio(self) -> float:
+        return self.files_with_errors / self.files if self.files else 0.0
+
+    @property
+    def needs_attention(self) -> bool:
+        """Whether a human should look. Unresolved headers always qualify —
+        each one is a class whose members may be missing from the statistics."""
+        return self.unresolved > 0
+
+    def summary(self) -> str:
+        if self.unresolved:
+            return (
+                f"{self.files}개 파일 중 {self.files_with_unresolved}개에서 "
+                f"class 선언 {self.unresolved}곳을 판정하지 못했습니다 "
+                f"(이 클래스들의 멤버가 통계에서 빠졌을 수 있습니다)"
+            )
+        if self.error_nodes:
+            return (
+                f"{self.files}개 파일, class 선언은 모두 판정됨 · "
+                f"파서가 못 읽은 구간 {self.error_nodes}곳 "
+                f"({self.files_with_errors}개 파일, 주로 복잡한 템플릿 — 통계에는 영향 없음)"
+            )
+        return f"{self.files}개 파일 모두 정상 파싱"
+
+
+def _unresolved_count(node) -> int:
+    """`class X Y` sites recovery left alone — ambiguous, so possibly misread."""
+    total = 0
+    if node.type in ("function_definition", "declaration"):
+        kids = node.children
+        if (
+            kids
+            and kids[0].type in _CLASSISH
+            and kids[0].child_by_field_name("body") is None
+            and len(kids) > 1
+            and kids[1].type in ("identifier", "ERROR", "init_declarator")
+        ):
+            total += 1
+    return total + sum(_unresolved_count(c) for c in node.children)
+
+
+def collect_macros(texts: Iterable[str]) -> frozenset[str]:
+    """Object-like macro names the given sources define.
+
+    Pass this to the scanning functions so class headers resolve without
+    guessing. Collected from the repo being scanned, so it is a fact about that
+    repo rather than a pattern someone hardcoded.
+    """
+    found: set[str] = set()
+    for text in texts:
+        found |= cpp_parser.object_like_macros(text)
+    return frozenset(found)
+
+
+def _parse(source: str, macros: frozenset[str] = frozenset()):
+    """Parse tree for a C++ source, recovering macro-derailed class headers.
+
+    The recovered tree is kept only when it has no more errors than the original,
+    so recovery can never make a parse worse — the guard that lets this run on
+    every file without a per-repo allowlist.
+    """
     if _LANGUAGE is None:
         return None
-    return Parser(_LANGUAGE).parse(_strip_export_macros(source).encode("utf-8", "replace"))
+    parser = Parser(_LANGUAGE)
+    tree = parser.parse(source.encode("utf-8", "replace"))
+
+    spans: list[tuple[int, int]] = []
+    _recovery_spans(tree.root_node, macros, spans)
+    if not spans:
+        return tree
+
+    retry = parser.parse(_blank_span(source, spans).encode("utf-8", "replace"))
+    return (
+        retry
+        if _error_count(retry.root_node) <= _error_count(tree.root_node)
+        else tree
+    )
 
 
 def _function_declarator(node):
@@ -323,14 +545,32 @@ def _iter_declarations(node, access: str | None) -> Iterator[tuple[str, str]]:
         yield from _iter_declarations(child, access)
 
 
-def scan(source: str) -> Iterator[tuple[str, str]]:
+def scan_with_report(
+    source: str, macros: frozenset[str] = frozenset()
+) -> tuple[list[tuple[str, str]], ParseReport | None]:
+    """`scan`, plus how well the file parsed — from a single parse.
+
+    The learn scan uses this so measuring parse health costs nothing extra: the
+    tree is already built, and re-parsing every file just to count errors would
+    make the honest thing the expensive thing.
+    """
+    tree = _parse(source, macros)
+    if tree is None:
+        return [], None
+    return (
+        list(_iter_declarations(tree.root_node, None)),
+        ParseReport(_error_count(tree.root_node), _unresolved_count(tree.root_node)),
+    )
+
+
+def scan(source: str, macros: frozenset[str] = frozenset()) -> Iterator[tuple[str, str]]:
     """Yield (category, identifier) for a C++ source — the naming extractor's input.
 
     Same contract as cpp_parser.scan (the regex scanner), but AST-accurate:
     template parameters are not classes, macros are not functions, and member
     visibility comes from the tree rather than a hunk heuristic. Empty when
     tree-sitter is unavailable — the caller can fall back to the regex scanner."""
-    tree = _parse(source)
+    tree = _parse(source, macros)
     if tree is None:
         return
     yield from _iter_declarations(tree.root_node, None)
@@ -394,12 +634,12 @@ def _walk_members(node, owner: str, out: list[MemberDecl]) -> None:
         _walk_members(child, owner, out)
 
 
-def members(source: str) -> list[MemberDecl]:
+def members(source: str, macros: frozenset[str] = frozenset()) -> list[MemberDecl]:
     """Every data member declared in a C++ source, with its type and ownership shape.
 
     Returns [] when tree-sitter is unavailable — callers treat that as "cannot
     verify", never as "no violations"."""
-    tree = _parse(source)
+    tree = _parse(source, macros)
     if tree is None:
         return []
     out: list[MemberDecl] = []
@@ -407,12 +647,12 @@ def members(source: str) -> list[MemberDecl]:
     return out
 
 
-def classes(source: str) -> list[ClassDecl]:
+def classes(source: str, macros: frozenset[str] = frozenset()) -> list[ClassDecl]:
     """Every class/struct with the bases it derives from — the inheritance edge.
 
     Feeds the structure survey and the hierarchy check: "all X derive from Y" is
     visible here long before any function body is read."""
-    tree = _parse(source)
+    tree = _parse(source, macros)
     if tree is None:
         return []
     out: list[ClassDecl] = []
@@ -434,12 +674,12 @@ def classes(source: str) -> list[ClassDecl]:
     return out
 
 
-def functions(source: str) -> list[FunctionDecl]:
+def functions(source: str, macros: frozenset[str] = frozenset()) -> list[FunctionDecl]:
     """Every function/method declaration in a C++ source, with its return type.
 
     Returns [] when tree-sitter is unavailable — callers treat that as "cannot
     verify" rather than a parse failure."""
-    tree = _parse(source)
+    tree = _parse(source, macros)
     if tree is None:
         return []
     out: list[FunctionDecl] = []

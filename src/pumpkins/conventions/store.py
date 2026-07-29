@@ -279,6 +279,7 @@ def write_scan_report(
     scanned_files: int | None = None,
     rejected: list[dict] | None = None,
     split_hypotheses: list[dict] | None = None,
+    health=None,
 ) -> Path:
     """What the last learn run measured, and how. Not configuration — a record.
 
@@ -297,6 +298,26 @@ def write_scan_report(
             # 어떤 스캐너가 읽었는지 — 폴백이면 통계가 달라지고 따라서
             # 규칙도 달라진다. 두 리포트를 비교할 때 먼저 봐야 할 값이다.
             "engine": cpp_ast.engine(),
+            # 얼마나 제대로 읽었는가. 통계는 읽기의 품질을 그대로 물려받고,
+            # 조용히 잘못 읽는 파서는 잘 도는 파서와 구분이 안 된다 —
+            # export 매크로 하나가 어느 리포 멤버의 3분의 1을 안 보이게
+            # 만들었는데 도구는 아무 말도 하지 않았다.
+            "parse_health": (
+                {
+                    "files": health.files,
+                    # 통계에 실제로 영향을 주는 값은 이쪽이다.
+                    "unresolved_class_headers": health.unresolved,
+                    # 이쪽은 대부분 복잡한 템플릿 — 참고용.
+                    "parse_errors": health.error_nodes,
+                    "files_with_parse_errors": health.files_with_errors,
+                    "worst": [
+                        f"{path} (class 판정불가 {u}, 오류 {e})"
+                        for path, u, e in health.worst
+                    ],
+                }
+                if health is not None
+                else None
+            ),
             **(scan_scope or RuleScope()).model_dump(),
         },
         "thresholds": {

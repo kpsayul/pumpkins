@@ -135,6 +135,10 @@ def survey_repo(
         except OSError as exc:
             log.debug("survey: skipping unreadable %s: %s", path, exc)
 
+    # Same macro list the learn scan uses, so the survey and the statistics
+    # describe the same code rather than two different readings of it.
+    macros = cpp_ast.collect_macros(texts.values())
+
     for path, text in texts.items():
         rel = rel_paths[path]
         module = _module_of(rel)
@@ -152,12 +156,12 @@ def survey_repo(
             continue
 
         members_by_owner: dict[str, list] = defaultdict(list)
-        for member in cpp_ast.members(text):
+        for member in cpp_ast.members(text, macros):
             members_by_owner[member.owner].append(member)
             result.raw_pointer_members += member.is_raw_pointer
             result.smart_pointer_members += member.is_smart_pointer
 
-        for cls in cpp_ast.classes(text):
+        for cls in cpp_ast.classes(text, macros):
             owned = members_by_owner.get(cls.name, [])
             result.classes.append(
                 ClassSummary(

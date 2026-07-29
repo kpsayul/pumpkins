@@ -260,6 +260,12 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
     findings: list[Finding] = []
     seen: set[tuple[str, str, str]] = set()  # (file, rule id, subject) — report once
     layer_index = _ForbiddenHeaderIndex(repo)
+    # The repo's own macro names, so a class header reads here exactly as it did
+    # when the rule was learned. Two different readings of the same file would
+    # mean a rule measured at 100% could still fire on conforming code.
+    macros = _repo_macros(repo) if any(
+        r.check.kind in DETERMINISTIC_STRUCTURAL_AST for r in structural
+    ) else frozenset()
 
     for file_diff in scope.files:
         in_scope = [r for r in structural if r.scope.applies_to(file_diff.path)]
@@ -276,15 +282,15 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
 
         # Only what the diff touched (declared on a changed line).
         touched_fns = [
-            f for f in cpp_ast.functions(text)
+            f for f in cpp_ast.functions(text, macros)
             if _line_in_ranges(f.line, file_diff.added_ranges)
         ] if text else []
         touched_members = [
-            m for m in cpp_ast.members(text)
+            m for m in cpp_ast.members(text, macros)
             if _line_in_ranges(m.line, file_diff.added_ranges)
         ] if text else []
         touched_classes = [
-            c for c in cpp_ast.classes(text)
+            c for c in cpp_ast.classes(text, macros)
             if _line_in_ranges(c.line, file_diff.added_ranges)
         ] if text else []
 
@@ -300,6 +306,23 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
 
     log.info("structural check: %d rule(s) → %d finding(s)", len(structural), len(findings))
     return findings
+
+
+def _repo_macros(repo: Path) -> frozenset[str]:
+    """Object-like macro names the repo defines. Cached per process.
+
+    Collected lazily and only when an AST-backed structural rule is active, so a
+    review with no such rule never pays for the walk."""
+    cached = _MACRO_CACHE.get(repo)
+    if cached is None:
+        from pumpkins.conventions.extractor import collect_macros
+
+        cached = collect_macros(repo)
+        _MACRO_CACHE[repo] = cached
+    return cached
+
+
+_MACRO_CACHE: dict[Path, frozenset[str]] = {}
 
 
 def _violations(file_diff, rule, functions, members, classes, layer_index):
