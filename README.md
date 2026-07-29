@@ -401,17 +401,16 @@ pytest
 
 **최근 완료:** 프로파일 분리(`concurrency`+`portability`) · 규칙을 리뷰 LLM에 주입(방안 B) · 실제 리포
 채점 하네스 · learn **2단 여과**(쪼개짐 추론만 강모델로 자동 승급) · **`--infer`**(틀 없는 AI 규칙 추측) +
-**기계 검증**(추측을 레포에 대조·채점) · **구조 규칙 첫 슬라이스** — tree-sitter AST로 `return_type` check
-(예: "create* 함수는 unique_ptr를 반환") 검증.
+**기계 검증**(추측을 레포에 대조·채점) · **구조 규칙** — tree-sitter AST로 `return_type` check(예: "create* 함수는 unique_ptr를 반환")를
+학습에서 검증하고, **리뷰에서도 결정적으로 검사**(loop 닫힘 — 위반을 `reproducible`로 지적).
 
 **다음:**
 
-1. **구조 규칙 확장 (tree-sitter)** — AST 층([cpp_ast.py](src/pumpkins/languages/cpp_ast.py))과 첫 구조
-   check(`return_type`)는 들어왔다. 남은 건 (a) 더 많은 구조 check — 계층 방향·소유권 그래프·상속, (b) 통계
-   추출기(`extractor`)를 정규식→AST로 올려 명명 통계의 정확도까지 높이기, (c) 검증된 구조 규칙을 리뷰에서
-   결정적으로 검사(현재는 measured지만 리뷰 적용은 LLM 판단).
-2. **리뷰측 체커 확장** — 검증된 `facet: other` 규칙(예: `#pragma once`)을 리뷰에서 **결정적으로** 검사.
-   지금은 검증은 되지만 리뷰 적용이 LLM 판단(참고용)에 머문다.
+1. **구조 규칙 확장 (tree-sitter)** — AST 층([cpp/ast.py](src/pumpkins/languages/cpp/ast.py))과 첫 구조
+   check(`return_type`)는 학습·검증·**리뷰 검사**까지 닫혔다. 남은 건 (a) 더 많은 구조 check — 계층 방향·소유권
+   그래프·상속, (b) 통계 추출기(`extractor`)를 정규식→AST로 올려 명명 통계의 정확도까지 높이기.
+2. **나머지 facet:other의 리뷰 검사** — `header_directive`(예: `#pragma once`)는 학습·검증은 되지만 리뷰
+   적용이 아직 LLM 판단(참고용)이다. `return_type`처럼 리뷰측 결정적 체커를 붙이면 됨.
 3. **헤더 분석** — 임시 TU로 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.
 4. **비C++ 동반 파일** — *"동작이 바뀌었는데 스펙/테스트 파일이 안 바뀌었다"* 가 높은 가치의 지적입니다.
 5. **출처 라벨 정정** — `reconcile`이 규칙별 판정 모델을 남기지 않아, 추론 규칙이 실제로는 강모델이 판정했는데

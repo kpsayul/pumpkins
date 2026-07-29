@@ -15,7 +15,7 @@ from pumpkins.conventions import (
     verify_inferred,
 )
 from pumpkins.conventions import verifier as verifier_mod
-from pumpkins.languages import cpp_ast
+from pumpkins.languages.cpp import ast as cpp_ast
 from pumpkins.models import DiffScope, FileDiff, LineRange
 
 requires_ts = pytest.mark.skipif(

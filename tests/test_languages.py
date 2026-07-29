@@ -8,7 +8,8 @@ threshold gate rejected a rule that was actually two rules.
 
 import pytest
 
-from pumpkins.languages import cpp_extensions, cpp_parser, cpp_tu_extensions, settings_path
+from pumpkins.languages import cpp_extensions, cpp_tu_extensions, settings_path
+from pumpkins.languages.cpp import parser as cpp_parser
 
 
 def _settings(repo):

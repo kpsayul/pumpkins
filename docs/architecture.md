@@ -42,8 +42,9 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `conventions/checker.py` | facet 규칙을 diff와 결정적 대조 | review |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
-| `languages/cpp_parser.py` | C++ 문법 지식(정규식 선언 인식·문맥 추적) | 공통 |
-| `languages/cpp_ast.py` | C++ AST(tree-sitter) — 구조 규칙 검증용 (네이티브 dep, import-가드로 격리) | learn |
+| `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자 스캔 + 구조 규칙 검증 (네이티브 dep, import-가드로 격리) | 공통 |
+| `languages/cpp/parser.py` | 정규식 C++ 파서 — 리뷰 hunk 검사 + AST 폴백 | 공통 |
+| `languages/cpp/naming.py` | facet 어휘 — 이름을 prefix/suffix/casing로 분해 | 공통 |
 | `models.py` | 단계 간 데이터 계약 | 공통 |
 | `config.py` | 전역 설정·모델 선택·상수 | 공통 |
 
@@ -70,8 +71,9 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
       extractor       learner                        (facet 규칙)
 ```
 
-- **extractor** — 정규식으로 식별자를 뽑아 카테고리별(멤버/상수/함수/클래스) 이름 통계
-  (prefix / suffix / casing 분포)를 낸다. LLM에는 파일 원문이 아니라 이 통계만 준다.
+- **extractor** — tree-sitter AST(`cpp_ast`)로 식별자를 뽑고, facet 어휘(`naming`)로 분해해 카테고리별
+  (멤버/상수/함수/클래스) 이름 통계(prefix / suffix / casing 분포)를 낸다. LLM에는 파일 원문이 아니라 이
+  통계만 준다.
 - **learner** — 통계를 LLM에 주고 규칙 후보를 판정한다. **2단계**로 나뉜다: 싼 모델이 규칙을 분류하고,
   한 카테고리가 두 무리로 갈린 "숨은 쪼개짐"의 **추론**만 강한 모델로 자동 승급한다.
 - **게이트** — 같은 패턴 **20회 이상 + 일관성 85% 이상**만 규칙으로 채택한다. LLM 판단과 무관하게 **코드가 강제**한다.
@@ -133,10 +135,13 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 
 학습된 규칙은 종류에 따라 리뷰에서 다르게 쓰인다.
 
-| | facet 규칙 (prefix/suffix/casing) | `facet: other` 규칙 (구조·레이아웃 등) |
+| 규칙 종류 | 검사 주체 | 재현성 |
 |---|---|---|
-| 검사 주체 | convention checker — **결정적** | 리뷰 LLM — 프롬프트에 넣어 판정 |
-| 재현성 | `reproducible=True` → **CI 막을 수 있음** | `reproducible=False` → 참고용 |
+| **명명** (facet prefix/suffix/casing) | convention checker — 정규식, **결정적** | `reproducible=True` → **CI 막을 수 있음** |
+| **구조** (facet=other + `check`, 예 `return_type`) | convention checker — **tree-sitter AST, 결정적** | `reproducible=True` → **CI 막을 수 있음** |
+| 그 외 facet=other (check 없음) | 리뷰 LLM — 프롬프트에 넣어 판정 | `reproducible=False` → 참고용 |
+
+명명과 구조 규칙은 diff를 **결정적으로** 검사한다(정규식 vs AST). check가 없는 관계형/의미적 규칙만 아직 LLM 판단에 머문다.
 
 ## 이 구조를 정하는 원칙
 
@@ -148,7 +153,7 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 ## 확장 지점
 
 - **리뷰 프로파일** — `profiles.py`에 (clang-tidy 체크 + LLM 지시) 한 벌을 추가하면 새 검사 축이 된다.
-- **언어** — C++ 문법 지식이 `languages/cpp_parser.py` 한 곳에 모여 있어, 두 번째 언어는 경계가 보이는 리팩터링이 된다.
-- **추론 check 어휘** — `verifier.py`의 check 종류(naming·header는 정규식, `return_type`은 tree-sitter AST)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp_ast.py` 위에 쌓인다.
+- **언어** — C++ 문법 지식이 `languages/cpp/parser.py` 한 곳에 모여 있어, 두 번째 언어는 경계가 보이는 리팩터링이 된다.
+- **추론 check 어휘** — `verifier.py`의 check 종류(naming·header는 정규식, `return_type`은 tree-sitter AST)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp/ast.py` 위에 쌓인다.
 
 각 확장의 상세 절차는 [extending.md](extending.md), 결정의 근거는 [design-history.md](design-history.md).

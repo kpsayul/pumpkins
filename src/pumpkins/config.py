@@ -15,7 +15,7 @@ import sys
 
 # --- Pipeline constants -----------------------------------------------------
 
-# C++ syntax — including which extensions count — lives in pumpkins/languages/cpp_parser.py.
+# C++ syntax — including which extensions count — lives in pumpkins/languages/cpp/.
 # A repo can override the extension set; see languages/__init__.py.
 
 # Extra lines around each changed range passed to clang-tidy's --line-filter.

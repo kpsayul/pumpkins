@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 
 from pumpkins.config import LEARN_SKIP_DIRS, LEARN_TEST_DIRS
 from pumpkins.conventions.scope import normalize_path, path_matches
-from pumpkins.languages import cpp_ast, cpp_extensions, cpp_parser, naming
+from pumpkins.languages import cpp_extensions
+from pumpkins.languages.cpp import ast as cpp_ast, naming, parser as cpp_parser
 
 log = logging.getLogger(__name__)
 

@@ -114,13 +114,16 @@ Stage 4의 계약은 `render_*(result: ReviewResult) -> str`입니다.
 판단하세요. 그게 이 파일의 존재 이유입니다 (프로바이더/모델, clang-tidy 버전,
 `rules_fingerprint`가 그 세 축입니다).
 
-## 언어 문법 건드리기 (`languages/cpp_parser.py`)
+## 언어 문법 건드리기 (`languages/`)
 
-선언 정규식·예약어·접근 지정자·확장자가 모두 여기 있습니다. `extractor.py`는 통계만 담당하니
-**문법 관련 변경은 이 파일에서** 하세요.
+C++를 읽는 층이 셋으로 갈려 있습니다(`extractor.py`는 통계만 담당):
 
-새 카테고리를 추가할 때는 `CATEGORIES`(extractor.py)와 `cpp_parser.match_identifiers`의 분기를 함께 고치고,
-**하위 호환을 반드시 생각하세요** — 이미 승인·커밋된 규칙이 새 카테고리 이름을 모르면 조용히 죽습니다.
+- **`cpp/ast.py`** (tree-sitter) — learn 스캔 + 구조 검증의 **주 파서**. 식별자 카테고리·구조는 여기서.
+- **`cpp/parser.py`** (정규식) — 리뷰 hunk 검사 + AST 폴백. 예약어·접근 지정자도 여기.
+- **`naming.py`** — 이름 facet 어휘(어떤 접두사/casing이 규칙 후보인가). "이름을 어떻게 분해하나"는 여기서.
+
+새 카테고리를 추가할 때는 `CATEGORIES`(extractor.py) + `cpp_ast.scan`의 분기(주) + `cpp_parser`(리뷰 hunk·폴백)를
+함께 고치고, **하위 호환을 반드시 생각하세요** — 이미 승인·커밋된 규칙이 새 카테고리 이름을 모르면 조용히 죽습니다.
 `checker._CATEGORY_ALIASES`가 그 장치입니다(옛 이름 → 새 이름들). 넓은 쪽에서 좁은 쪽으로만
 매핑하고, 반대 방향은 만들지 마세요: 정보가 없을 때 추측하는 규칙이 됩니다.
 
@@ -184,7 +187,7 @@ LLM이 채우면 안 되는 필드를 `ConventionRule`에 넣으면 모델이 �
 
 원칙은 게이트와 같습니다: 실패 방향을 안전하게(검증 실패 = 기각, 틀린 규칙 채택 아님).
 
-**구조 check**는 [cpp_ast.py](../src/pumpkins/languages/cpp_ast.py)(tree-sitter AST) 위에 쌓습니다 —
+**구조 check**는 [cpp/ast.py](../src/pumpkins/languages/cpp/ast.py)(tree-sitter AST) 위에 쌓습니다 —
 `return_type`이 그 예입니다("create*는 unique_ptr 반환"). tree-sitter는 정식 의존성이지만 **네이티브**라,
 ABI가 깨지면 `verify()`가 `None`을 돌려 그 check만 미검증으로 저하됩니다(무관한 명령은 안 죽음). 계층
 방향·소유권 그래프 같은 관계형 check도 같은 AST 층에 `cpp_ast`의 새 추출 함수 + `verify()` 분기로 추가합니다.

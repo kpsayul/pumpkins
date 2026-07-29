@@ -24,7 +24,7 @@ import logging
 from pathlib import Path
 
 from pumpkins.config import PUMPKINS_DIRNAME
-from pumpkins.languages import cpp_parser
+from pumpkins.languages.cpp import parser as cpp_parser
 
 log = logging.getLogger(__name__)
 

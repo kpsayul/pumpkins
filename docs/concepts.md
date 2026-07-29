@@ -12,18 +12,18 @@
 
 | 층 | 지금 위치 | 성격 |
 |---|---|---|
-| ① 언어 문법 — 선언이 어떻게 생겼나 | [cpp_parser.py](../src/pumpkins/languages/cpp_parser.py) | 언어 특화 (분리됨) |
+| ① 언어 문법 — 선언이 어떻게 생겼나 | [cpp/parser.py](../src/pumpkins/languages/cpp/parser.py) | 언어 특화 (분리됨) |
 | ② **facet 어휘** — 어떤 접두사/접미사/casing이 있나 (`m_`,`s_`,`g_`,`mFoo`, casing 종류) | **extractor.py** (`split_pattern`, `_classify_casing`) | 언어/컨벤션 특화 (섞임) |
 | ③ 통계 기계 — 분포 세기·임계선 게이트·쪼개짐 감지 | extractor.py | 언어 중립 |
 
-`cpp_parser.py`는 "선언이 어떻게 생겼나"(①), `extractor.py`는 "이 이름들의 공통점은?"(③)을 답하도록 나뉘어
+`cpp/parser.py`는 "선언이 어떻게 생겼나"(①), `extractor.py`는 "이 이름들의 공통점은?"(③)을 답하도록 나뉘어
 있는데, **②(어떤 affix가 컨벤션 후보인가)가 중립이어야 할 ③ 옆에 하드코딩**돼 있다. ②는 사실 ①과 같은
 "언어/프로젝트 지식"이다 — 어떤 리포는 `m_`, 어떤 리포는 `mFoo`를 쓴다.
 
 **선택지.**
 
-- **A. ②를 `cpp_parser.py`로 이동.** C++ 지식을 한곳에 모으고 `extractor.py`는 순수 중립 통계만 남긴다.
-  가장 작은 정리 — 새 추상화를 만들지 않고 **이미 있는 이음매를 날카롭게** 한다. cpp_parser.py의 기존 철학
+- **A. ②를 `cpp/parser.py`로 이동.** C++ 지식을 한곳에 모으고 `extractor.py`는 순수 중립 통계만 남긴다.
+  가장 작은 정리 — 새 추상화를 만들지 않고 **이미 있는 이음매를 날카롭게** 한다. cpp/parser.py의 기존 철학
   ("언어가 하나일 때 플러그인 인터페이스는 성급하다")과 일치.
 - **B. 전용 `cpp_extractor.py`.** C++ facet 분해를 별 파일로. A와 비슷하되 파일이 하나 는다. 두 번째
   언어가 올 때 `<lang>_extractor.py` 패턴이 보이는 게 장점.
@@ -38,17 +38,16 @@ tree-sitter/AST로 **대체하려는** 기법이라, 그걸 자동생성하는 �
 
 **잠정 결론 (구현 시).**
 
-1. **②(facet 어휘)를 ③에서 떼라** — 우선 A(cpp_parser.py로 이동)가 가장 싸고 이음매를 정리한다.
-2. **facet 어휘는 데이터로 뺄 값어치가 있다**(C) — 문법(①)과 달리 어휘(②)는 리포마다 다른 *데이터*라,
-   `settings.yml`류의 작은 선언 파일로 외부화하는 건 경계가 분명한 이득이다.
-3. **전면 선언적 추출기(전처리기 자동생성)는 따로 만들지 말고 tree-sitter 이행에 흡수하라** — 선언적
-   추출을 원하면 그게 tree-sitter다. "구조적 규칙(tree-sitter)" 과제(로드맵)와 같은 작업으로 묶인다.
+1. **②(facet 어휘)를 ③에서 떼라** — ✅ 했다. facet 어휘는 [naming.py](../src/pumpkins/languages/cpp/naming.py)로
+   나갔고(A안보다 나은 전용 모듈), `extractor`는 이제 **통계만** 남았다.
+2. **facet 어휘는 데이터로 뺄 값어치가 있다**(C) — 아직. `naming.py`에 상수로 하드코딩돼 있다. 리포마다
+   다른 값(어떤 팀은 `mFoo`)이라 `settings.yml`류 선언 파일로 외부화하는 건 남은 걸음.
+3. **전면 선언적 추출기(전처리기 자동생성)는 따로 만들지 말고 tree-sitter 이행에 흡수하라** — ✅ 그렇게 됐다.
+   자체 스펙-포맷을 만들지 않고 tree-sitter를 썼다.
 
-즉 **작고 독립적인 이득(② 분리 + 어휘 데이터화)은 지금 언어에서 바로 가능**하고, **큰 야심(스펙→추출기
-자동생성)은 tree-sitter 이행의 일부**로 본다.
-
-> **진행 (2026-07): tree-sitter가 들어오기 시작했다 — 단, 검증 쪽부터.**
-> [cpp_ast.py](../src/pumpkins/languages/cpp_ast.py)(tree-sitter)가 `--infer`의 **구조 check 검증**
-> (`return_type`)에 쓰인다. 아직 **추출기(`extractor`)는 정규식 그대로**다 — 위 ①②③ 분리와 명명 통계의
-> AST 이관은 여전히 미구현 과제로 남는다. 즉 tree-sitter는 "새 규칙을 검증"하는 데 먼저 쓰였고, "기존 통계
-> 추출"을 AST로 올리는 건 별개의 다음 걸음이다.
+> **진행 (2026-07): 추출기가 AST로 올라갔다.**
+> [extractor](../src/pumpkins/conventions/extractor.py)의 스캔이 이제
+> [cpp/ast.py](../src/pumpkins/languages/cpp/ast.py)(tree-sitter)로 돈다 — 템플릿·매크로·여러 줄 선언을
+> 정규식보다 정확히 읽는다(정규식 [cpp/parser.py](../src/pumpkins/languages/cpp/parser.py)는 네이티브 lib이
+> 깨졌을 때의 폴백 + 리뷰 hunk 검사에 남는다). 층도 갈렸다: **①문법**=`cpp_ast`, **②facet 어휘**=`naming.py`,
+> **③통계**=`extractor`. 남은 건 위 #2(어휘 데이터화)뿐이다.

@@ -42,7 +42,7 @@ from pumpkins.conventions.proposer import (
     to_convention_rules,
 )
 from pumpkins.conventions.scope import RuleScope
-from pumpkins.languages import cpp_ast, cpp_parser
+from pumpkins.languages.cpp import ast as cpp_ast, parser as cpp_parser
 
 log = logging.getLogger(__name__)
 
