@@ -213,7 +213,7 @@ learn의 실제 토큰 사용량(측정):
 
 1. ✅ **`pumpkins learn` (구현됨)** — 리포 스캔 → 식별자 통계(기계적 추출) → LLM 판정 → `conventions/` 규칙 저장소 생성.
    *이것 하나만으로 데모가 된다* — "너희 리포 규칙이 이거야"를 보여주는 것 자체가 와우 포인트.
-   - 구현: [conventions/extractor.py](../src/pumpkins/conventions/extractor.py)(L1: 정규식 기반 추출·통계 — tree-sitter는 업그레이드 경로),
+   - 구현: [conventions/extractor.py](../src/pumpkins/conventions/extractor.py)(L1: AST(tree-sitter) 기반 추출·통계),
      [conventions/learner.py](../src/pumpkins/conventions/learner.py)(L2: LLM 판정 + **코드 측 임계선 게이트**),
      [conventions/store.py](../src/pumpkins/conventions/store.py)(L3: 기존 결정과 병합 + 규칙당 파일 기록)
    - `--no-llm`으로 LLM에 전달될 통계 원본을 그대로 볼 수 있음 (파이프라인 디버깅)
@@ -253,15 +253,16 @@ learn의 실제 토큰 사용량(측정):
 
 **남은 것:**
 
-1. **구조 규칙 확장 (tree-sitter)** — AST 층과 첫 구조 check(`return_type`)는 학습·검증·리뷰까지 닫혔다.
-   남은 건 (a) 더 많은 구조 check(계층 방향·소유권 그래프·상속), (b) 통계 추출기(`extractor`)를 정규식→AST로
-   올려 명명 통계 정확도까지 높이기(§2 냄새 정리와 맞물림). 구조 추론은 입력이 커지므로 **2단 여과 배관
-   재사용**으로 비용을 통제한다.
+1. **구조 규칙 확장 (tree-sitter)** — AST 층과 첫 구조 check(`return_type`), 그리고 통계 추출기의 AST 이관은
+   끝났다. 남은 건 더 많은 구조 check(계층 방향·소유권 그래프·상속)다. 구조 추론은 입력이 커지므로
+   **2단 여과 배관 재사용**으로 비용을 통제한다.
 2. **나머지 `facet: other`의 리뷰 검사** — `header_directive`(예: `#pragma once`)는 학습·검증은 되지만 리뷰
    적용이 아직 LLM 판단(`reproducible=False`)이다. `return_type`처럼 리뷰측 결정적 체커를 붙이면 된다.
 3. **헤더 분석** — 임시 TU를 만들어 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.
 4. **비C++ 동반 파일** — "동작이 바뀌었는데 스펙/테스트 파일이 안 바뀌었다"가 높은 가치의 지적이다.
 5. **출처 라벨 정정** — `reconcile`이 규칙별 판정 모델을 남기지 않아, 추론 규칙(강모델 판정)이 learn 모델로 기록되는 작은 부정확.
+6. **facet 어휘 데이터화** — `languages/cpp/naming.py`의 접두사/casing 목록이 상수로 하드코딩돼 있다. 리포마다
+   다른 값(`mFoo` vs `m_foo`)이라, `pumpkins/settings.yml`류 선언 파일로 외부화하면 코드 수정 없이 리포가 자기 어휘를 정할 수 있다.
 
 ## 요약
 

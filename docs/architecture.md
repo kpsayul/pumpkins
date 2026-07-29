@@ -35,11 +35,11 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `llm/postprocess.py` | LLM triage — 노이즈 필터·심각도·설명·추가 탐지·규칙 판정 | review |
 | `report/markdown.py` | 마크다운 리포트 렌더 | review |
 | `report/dump.py` | `--out-dir` 실행 산출물(진단·프롬프트·출처) | review |
-| `conventions/extractor.py` | 정규식 이름 통계 (learn 통계 경로) | learn |
+| `conventions/extractor.py` | 이름 통계 — AST로 스캔하고 facet 어휘로 분해 (learn 통계 경로) | learn |
 | `conventions/learner.py` | 통계 → LLM 규칙 판정 + 임계선 게이트 | learn |
 | `conventions/proposer.py` | 틀 없이 코드에서 규칙 추측 (learn 추론 경로) | learn |
 | `conventions/verifier.py` | 추측을 리포에 대조·채점 | learn |
-| `conventions/checker.py` | facet 규칙을 diff와 결정적 대조 | review |
+| `conventions/checker.py` | 규칙을 diff와 결정적 대조 (명명=선언 매칭, 구조=AST) | review |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
 | `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자 스캔 + 구조 규칙 검증 (네이티브 dep, import-가드로 격리) | 공통 |
@@ -128,7 +128,7 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 | 1 | `diff/collector` | git diff → `DiffScope` (변경 라인 + 문맥) |
 | 2 | `analysis/clang_tidy` | 활성 프로파일의 체크로 clang-tidy 실행 → 진단 |
 | 3 | `llm/postprocess` | LLM triage — 진단 걸러내고, diff에서 결함 직접 탐지, **활성 규칙도 프롬프트로 받아 판정** |
-| 3.5 | `conventions/checker` | facet 규칙을 diff의 선언과 **결정적** 대조 → 질문형 finding |
+| 3.5 | `conventions/checker` | 규칙을 diff와 **결정적** 대조 (명명=선언 매칭, 구조=AST) → 질문형 finding |
 | 4 | `report/markdown` | 심각도순 병합, **커버리지 공백 표시** |
 
 ### 규칙이 리뷰에 적용되는 방식
@@ -153,7 +153,7 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 ## 확장 지점
 
 - **리뷰 프로파일** — `profiles.py`에 (clang-tidy 체크 + LLM 지시) 한 벌을 추가하면 새 검사 축이 된다.
-- **언어** — C++ 문법 지식이 `languages/cpp/parser.py` 한 곳에 모여 있어, 두 번째 언어는 경계가 보이는 리팩터링이 된다.
+- **언어** — C++ 지식이 `languages/cpp/`(ast/parser/naming)에 모여 있어, 두 번째 언어는 `languages/<lang>/`로 나란히 놓으면 된다.
 - **추론 check 어휘** — `verifier.py`의 check 종류(naming·header는 정규식, `return_type`은 tree-sitter AST)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp/ast.py` 위에 쌓인다.
 
 각 확장의 상세 절차는 [extending.md](extending.md), 결정의 근거는 [design-history.md](design-history.md).

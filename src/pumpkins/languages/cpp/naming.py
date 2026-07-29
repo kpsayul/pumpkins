@@ -4,9 +4,10 @@ suffix and casing.
 This is the "which prefixes / casings exist" knowledge that used to sit inside
 [conventions/extractor.py](../../conventions/extractor.py) next to the statistics
 machinery. It is a different layer: the extractor *counts* facet distributions
-(neutral), this module *defines the facets* (C++/convention knowledge). Keeping
-them apart is the split argued in docs/concepts.md — and it is genuinely data,
-so a repo that names members `mFoo` instead of `m_foo` is one edit away.
+(neutral), this module *defines the facets* (C++/convention knowledge). The
+vocabulary is genuinely data — a repo that names members `mFoo` instead of
+`m_foo` differs only in these constants — so externalizing it to a settings file
+is a natural next step (see the design doc's roadmap).
 
 Nothing here parses code or reads files; it only decomposes a name string.
 """

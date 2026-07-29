@@ -46,34 +46,20 @@ git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처�
 | [docs/architecture.md](docs/architecture.md) | **현재 구조** — 두 국면(learn/review), 모듈 지도, 데이터 계약, 규칙이 적용되는 방식. 구조만, 추상적으로 |
 | [docs/convention-detection-design.md](docs/convention-detection-design.md) | **핵심 기능 설계 검토** — 사람 리뷰어의 지적을 자동화하는 방안(A/B/C), 설계 결정, 리스크, MVP 경로 |
 | [docs/design-history.md](docs/design-history.md) | **시행착오·측정 기록** — 실제 리포에서 발견해 고친 것, 판단의 근거. "왜 이렇게 됐나"의 히스토리(구조 아님) |
-| [docs/concepts.md](docs/concepts.md) | **미구현 컨셉 노트** — 아직 손대지 않은 방향의 검토(합의된 명세 아님) |
 | [docs/verification-plan.md](docs/verification-plan.md) | "리뷰어의 판단을 재현할 수 있는가" 검증 방법, 측정 지표, 채택/기각 기준 |
 | [docs/extending.md](docs/extending.md) | 규칙(체크) 프로파일·diff 소스·분석기·리포트 포맷 확장 방법 |
-| [docs/llm-provider-and-keys-design.md](docs/llm-provider-and-keys-design.md) | LLM 프로바이더(Claude/GPT) 전환 & API 키 관리 설계 |
+| [docs/llm-provider-and-keys-design.md](docs/llm-provider-and-keys-design.md) | **LLM 프로바이더 & API 키** — 프로바이더 선택·모델·키 관리의 현재 동작 레퍼런스 |
 
 ## 아키텍처
 
+**두 국면**으로 나뉩니다 — 규칙을 만드는 `learn`, 규칙을 쓰는 `review`. 둘은 규칙 저장소(`pumpkins/`)로만 연결됩니다.
+
 ```
-git diff ──▶ DiffScope ──▶ RawDiagnostic[] ──▶ Finding[] ──▶ report.md
-   diff/collector    analysis/clang_tidy   llm/postprocess   report/markdown
+learn:   리포 코드 ──▶ 규칙 추출 ──▶ candidates/ ──(사람 승인)──▶ rules/
+review:  git diff  ──▶ clang-tidy + LLM triage + 컨벤션 검사 ──▶ report.md   (rules/ 를 읽어 적용)
 ```
 
-| 모듈 | 역할 |
-|---|---|
-| `diff/collector.py` | `git diff` 수집·파싱 → 파일별 변경 라인 범위 + hunk 문맥 |
-| `analysis/clang_tidy.py` | clang-tidy를 별도 프로세스로 실행, 진단 파싱 (compile-DB / 얕은 모드) |
-| `analysis/checks.py` | 체크 프로파일 (현재 `concurrency`, 확장 가능) |
-| `llm/provider.py` | LLM 프로바이더 어댑터 — `LLM_PROVIDER`(anthropic/openai)에 따라 구조화 출력 클라이언트 선택 |
-| `llm/postprocess.py` | LLM 구조화 출력으로 노이즈 필터 + 심각도 + 설명/수정안 + 추가 탐지 |
-| `report/markdown.py` | 마크다운 리포트 렌더링 |
-| `report/dump.py` | 실행 산출물 (`--out-dir`) — 리포트·원본 diff·LLM 프롬프트·실행 출처 |
-| `models.py` | 단계 간 데이터 계약 (`DiffScope`, `RawDiagnostic`, `Finding`, `Evidence`, `ReviewResult`) |
-| `conventions/extractor.py` | (learn L1) 정규식 기반 식별자 추출(멤버/상수/함수/클래스) → 명명 통계 |
-| `conventions/learner.py` | (learn L2) LLM 규칙 판정 + 임계선 게이트 — 무엇을 *제안*할지만 정함 |
-| `conventions/checker.py` | (리뷰 3.5단계) diff를 활성 규칙과 결정적 대조 → 질문형 finding |
-| `conventions/scope.py` | 규칙·스캔의 적용 범위 (경로 glob / 확장자 / 제외 경로) |
-| `conventions/store.py` | 대상 리포의 `pumpkins/` 규칙 저장소 — 상태(디렉터리), 승인 게이트, 재실행 병합 |
-| `languages/` | C++ 문법 지식 + 리포별 확장자 설정(`pumpkins/settings.yml`) |
+전체 모듈 지도·데이터 계약·리뷰 단계는 **[docs/architecture.md](docs/architecture.md)** 를 보세요.
 
 ## 빠른 시작
 
@@ -389,8 +375,8 @@ pytest
 
 - **헤더 온리 프로젝트에서 clang-tidy 축이 사실상 무용.** 얕은 모드는 헤더를 단독 분석할 수 없어 TU만 봅니다. 구현이 헤더에 인라인된 프로젝트(헤더가 소스보다 네 배 이상 많은 리포를 측정했습니다)에서는 이 축이 항상 0건입니다. `compile_commands.json`을 만들어 주는 것이 유일한 해법 — 리포트가 이 안내를 출력합니다.
 - **비C++ 동반 파일은 안 읽습니다.** 확장자 필터를 통과하지 못한 변경(예: 테스트케이스·스펙 파일)은 어떤 단계도 보지 않습니다. 동작 변경과 스펙·테스트가 한 커밋에 오는 리포에서는 리뷰 가치의 절반이 여기 있습니다.
-- **체크 프로파일이 `concurrency` 하나뿐.** LLM 프롬프트도 동시성 안티패턴만 찾도록 고정돼 있어서, 그 밖의 결함(표준·이식성 위반, 미사용 파라미터, 형제 파일 비대칭 등)은 원리적으로 나오지 않습니다. fmt PR 리뷰에서 LLM 출력이 11토큰이었던 이유가 이것입니다 — 모델은 지시대로 행동했습니다.
-- **컨벤션 축은 네이밍만 커버.** 구조적 관행(계층 방향, 소유권, 에러 처리)은 `facet: other`로 기록만 되고 기계 대조되지 않습니다. 정규식 추출로는 닿지 않는 영역이라 tree-sitter/AST가 전제 조건입니다.
+- **체크 프로파일이 2축(`concurrency`·`portability`)뿐이고, 한 번에 하나만 돕니다.** LLM 프롬프트는 이제 프로파일별로 조립되지만, 두 축 밖의 결함(미사용 파라미터, 형제 파일 비대칭 등)은 해당 프로파일이 없어 나오지 않습니다.
+- **컨벤션 축은 명명 + 일부 구조만 커버.** 반환 타입(`return_type`) 같은 구조 규칙은 tree-sitter AST로 학습·검증·리뷰 검사까지 되지만, 계층 방향·소유권 그래프 같은 관계형 관행은 아직입니다.
 - 코드 생성 산출물이 통계를 오염시킬 수 있습니다(플레이스홀더 이름 등) — `--exclude`로 빼세요. 다만 실패 방향은 안전한 쪽입니다: 규칙이 **기각**되어 침묵할 뿐, 틀린 규칙이 채택되지는 않습니다.
 - clang-tidy 텍스트 출력 파싱 — `--export-fixes` YAML 전환 예정.
 - LLM 호출은 diff 전체를 한 번에 전달 — 대형 diff는 아직 청킹 안 함.
@@ -407,8 +393,8 @@ pytest
 **다음:**
 
 1. **구조 규칙 확장 (tree-sitter)** — AST 층([cpp/ast.py](src/pumpkins/languages/cpp/ast.py))과 첫 구조
-   check(`return_type`)는 학습·검증·**리뷰 검사**까지 닫혔다. 남은 건 (a) 더 많은 구조 check — 계층 방향·소유권
-   그래프·상속, (b) 통계 추출기(`extractor`)를 정규식→AST로 올려 명명 통계의 정확도까지 높이기.
+   check(`return_type`)는 학습·검증·**리뷰 검사**까지 닫혔다. 남은 건 더 많은 구조 check — 계층 방향·소유권
+   그래프·상속.
 2. **나머지 facet:other의 리뷰 검사** — `header_directive`(예: `#pragma once`)는 학습·검증은 되지만 리뷰
    적용이 아직 LLM 판단(참고용)이다. `return_type`처럼 리뷰측 결정적 체커를 붙이면 됨.
 3. **헤더 분석** — 임시 TU로 헤더를 include해 분석. 헤더 온리 프로젝트에서 clang-tidy 축이 영구 0건인 문제.

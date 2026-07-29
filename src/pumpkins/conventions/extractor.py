@@ -6,7 +6,7 @@ cased. Only these statistics plus a small raw-name sample are sent to the LLM in
 stage L2 (learner.py) — never whole files — which keeps the token cost of
 `pumpkins learn` low (docs/convention-detection-design.md §2, 방안 A).
 
-Two layers are kept apart (docs/concepts.md):
+Two layers are kept apart:
   - scanning "what is declared" → languages/cpp/ast.py (tree-sitter AST; the
     regex cpp/parser.py is a fallback when the native lib is unavailable)
   - the facet vocabulary "how a name decomposes" → languages/cpp/naming.py
