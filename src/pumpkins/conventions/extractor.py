@@ -1,23 +1,22 @@
 """Convention learning, stage L1 — mechanical identifier extraction (no LLM).
 
 Turns a repository into naming *statistics*: per identifier category
-(member_variable / function / class_type), how names are prefixed, suffixed
-and cased. Only these statistics plus a small raw-name sample are sent to the
-LLM in stage L2 (learner.py) — never whole files — which is what keeps the
-token cost of `pumpkins learn` low (docs/convention-detection-design.md §2,
-방안 A).
+(member/function/class_type/constant), how names are prefixed, suffixed and
+cased. Only these statistics plus a small raw-name sample are sent to the LLM in
+stage L2 (learner.py) — never whole files — which keeps the token cost of
+`pumpkins learn` low (docs/convention-detection-design.md §2, 방안 A).
 
-This is intentionally a heuristic regex scan, not a parser: macros, exotic
-templates and multi-line declarations will slip through. That is acceptable —
-we measure *dominant* conventions, and the threshold gate (config
-MIN_RULE_OCCURRENCES / MIN_RULE_CONSISTENCY) absorbs the noise. The upgrade
-path is tree-sitter.
+Two layers are kept apart (docs/concepts.md):
+  - scanning "what is declared" → languages/cpp/ast.py (tree-sitter AST; the
+    regex cpp/parser.py is a fallback when the native lib is unavailable)
+  - the facet vocabulary "how a name decomposes" → languages/cpp/naming.py
+This module owns only the statistics on top: counting distributions and
+detecting hidden splits.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from collections import Counter
 from pathlib import Path
 from typing import Iterator
@@ -26,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from pumpkins.config import LEARN_SKIP_DIRS, LEARN_TEST_DIRS
 from pumpkins.conventions.scope import normalize_path, path_matches
-from pumpkins.languages import cpp_extensions, cpp_parser
+from pumpkins.languages import cpp_ast, cpp_extensions, cpp_parser, naming
 
 log = logging.getLogger(__name__)
 
@@ -53,8 +52,13 @@ CATEGORIES = (
     "class_type",
 )
 
-# C++ syntax lives in languages/cpp_parser.py; re-exported here because checker.py and
-# the tests speak this vocabulary. This module's own job is statistics.
+# Re-exported so checker.py and the tests keep a single import site. Two homes:
+#   - name *facets* (split_pattern / casing) → languages/cpp/naming.py
+#   - the regex parser's line helpers → cpp/parser.py (used by the review-hunk check)
+# This module itself only does statistics.
+AMBIGUOUS_CASING = naming.AMBIGUOUS_CASING
+casing_matches = naming.casing_matches
+split_pattern = naming.split_pattern
 sanitize_line = cpp_parser.sanitize_line
 strip_template_params = cpp_parser.strip_template_params
 match_identifiers = cpp_parser.match_identifiers
@@ -85,25 +89,6 @@ class CategoryStats(BaseModel):
     # are all in test/gtest/, a bundled framework with its own style. Without
     # this the model can only guess, and it did — "no structural distinction".
     facet_dirs: dict[str, list[str]] = Field(default_factory=dict)
-
-
-# --------------------------------------------------------------- name facets
-
-# A single lowercase word (`dump`, `value`, `data_`) satisfies lowerCamel and
-# lower_snake equally — it has no word boundary to reveal which one the project
-# follows. Counting it as a style of its own splits one real convention across
-# three buckets and hides it from the threshold gate: fmt's members are
-# uniformly snake_case, yet came out as single_lower 66% / lower_snake 33%,
-# below MIN_RULE_CONSISTENCY. So these names are excluded from the casing
-# statistics, and on the review side they never violate a casing rule.
-AMBIGUOUS_CASING = "single_lower"
-
-_CASING_COMPATIBLE = {AMBIGUOUS_CASING: frozenset({"lowerCamel", "lower_snake"})}
-
-
-def casing_matches(observed: str, expected: str) -> bool:
-    """Whether an identifier's observed casing satisfies a rule's expected one."""
-    return observed == expected or expected in _CASING_COMPATIBLE.get(observed, ())
 
 
 # ----------------------------------------------------------- hidden splits
@@ -145,59 +130,21 @@ def detect_split_signal(
         return None  # 작은 쪽이 잡음 수준
     return top, second
 
-def split_pattern(name: str) -> tuple[str, str, str]:
-    """Decompose an identifier into (prefix, suffix, casing) facets.
-
-    e.g. "m_maxCount" -> ("m_", "(none)", "lowerCamel")
-         "queue_"     -> ("(none)", "_", "single_lower")
-    """
-    prefix, core = "(none)", name
-    if core.startswith("m_"):
-        prefix, core = "m_", core[2:]
-    elif core.startswith("s_"):
-        prefix, core = "s_", core[2:]
-    elif core.startswith("g_"):
-        prefix, core = "g_", core[2:]
-    elif core.startswith("_"):
-        prefix, core = "_", core.lstrip("_")
-    # Underscore-less Hungarian prefixes. The uppercase requirement is what
-    # keeps `max`/`mutex`/`kind` out: only `mItemCount`, `kMaxSize` match.
-    elif re.match(r"[mksg][A-Z]", core):
-        prefix, core = core[0], core[1:]
-
-    suffix = "(none)"
-    if core.endswith("_"):
-        suffix, core = "_", core.rstrip("_")
-
-    return prefix, suffix, _classify_casing(core)
-
-
-def _classify_casing(core: str) -> str:
-    if not core:
-        return "other"
-    if re.fullmatch(r"[a-z][a-z0-9]*", core):
-        return AMBIGUOUS_CASING  # no word boundary → no casing signal
-    if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+", core):
-        return "lower_snake"
-    if re.fullmatch(r"[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*)+", core):
-        return "lowerCamel"
-    if re.fullmatch(r"[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]*)*", core):
-        return "UpperCamel"
-    if re.fullmatch(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*", core):
-        return "UPPER_SNAKE"
-    return "other"
-
 
 # ------------------------------------------------------------------ scanning
 
 def _scan_file(path: Path) -> Iterator[tuple[str, str]]:
-    """Yield (category, identifier) pairs from one file."""
+    """Yield (category, identifier) pairs from one file.
+
+    Uses the tree-sitter AST scan (accurate on templates/macros/multi-line
+    declarations); falls back to the regex scanner only if tree-sitter is
+    unavailable (a broken native install), so learn degrades rather than dies."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         log.debug("skipping unreadable file %s: %s", path, exc)
         return
-    yield from cpp_parser.scan(text)
+    yield from (cpp_ast.scan(text) if cpp_ast.available() else cpp_parser.scan(text))
 
 
 def select_files(
