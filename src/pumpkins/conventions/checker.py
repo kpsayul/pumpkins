@@ -57,20 +57,25 @@ def _category_matches(rule_category: str, observed: str) -> bool:
     )
 
 
-def _hunk_access(hunk) -> str | None:
-    """Visibility in effect for a diff hunk, or None when it is not visible.
+def _opening_access(hunk) -> str | None:
+    """Visibility in effect at the START of a hunk, or None when not visible.
 
-    A hunk shows only a window. If no specifier appears in it or in git's
-    section header, the visibility is unknown and members are left in the
-    generic category rather than assumed.
+    A hunk shows only a window. Git's section header carries the enclosing
+    context — often the specifier itself (`@@ … @@ private:`) or the class line,
+    whose keyword decides the default. If neither is there the visibility is
+    unknown and members stay in the generic category rather than being guessed.
+
+    Only the *opening* state comes from here. Specifiers inside the hunk move it
+    line by line (see check_scope): resolving one visibility for a whole hunk
+    put every member after a second specifier in the wrong bucket — a hunk
+    spanning `public:` … `private:` marked the private ones public.
     """
-    for text in [hunk.section_header or ""] + [l.value for l in hunk]:
-        m = cpp_parser.ACCESS_RE.match(text)
-        if m:
-            return cpp_parser.normalize_access(m.group(1))
-    for text in [hunk.section_header or ""] + [l.value for l in hunk]:
-        if re.search(r"\b(class|struct)\s+[A-Za-z_]", text):
-            return cpp_parser.default_access(text)
+    header = hunk.section_header or ""
+    m = cpp_parser.ACCESS_RE.match(header)
+    if m:
+        return cpp_parser.normalize_access(m.group(1))
+    if re.search(r"\b(class|struct)\s+[A-Za-z_]", header):
+        return cpp_parser.default_access(header)
     return None
 
 _PREFIX_STRIP = {"m_": 2, "s_": 2, "g_": 2, "m": 1, "k": 1, "s": 1, "g": 1}
@@ -119,8 +124,14 @@ def check_scope(scope: DiffScope, rules: list[ConventionRule]) -> list[Finding]:
             member_context = bool(
                 _MEMBER_CONTEXT_RE.search(hunk.section_header or "")
             ) or any(_MEMBER_CONTEXT_RE.search(l.value) for l in hunk)
-            access = _hunk_access(hunk) if member_context else None
+            access = _opening_access(hunk) if member_context else None
             for line in hunk:
+                # Context lines count too: an unchanged `private:` above an
+                # added member is exactly how a diff shows the boundary.
+                specifier = cpp_parser.ACCESS_RE.match(line.value)
+                if specifier:
+                    access = cpp_parser.normalize_access(specifier.group(1))
+                    continue
                 if not line.is_added or line.target_line_no is None:
                     continue
                 sanitized = sanitize_line(line.value.rstrip("\n"))

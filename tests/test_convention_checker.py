@@ -228,3 +228,36 @@ index 1111111..2222222 100644
     assert "`count`" in finding.title
     # 같은 줄이 public 구역이면 이 규칙의 대상이 아니다
     assert check_scope(scope_for("public:"), [private_rule]) == []
+
+
+def test_visibility_is_tracked_line_by_line_within_a_hunk():
+    """한 hunk 안에 지정자가 두 번 나오면 뒤쪽부터는 뒤쪽 것이 유효하다.
+
+    hunk 전체에 하나의 visibility 를 적용하면 `public:` 다음의 `private:` 아래
+    멤버가 전부 public 으로 분류된다 — 정답지를 고치자 [1]·[3]이 동시에 빨간불이
+    되면서 드러난 버그다."""
+    diff = """\
+diff --git a/src/pool.h b/src/pool.h
+index 1111111..2222222 100644
+--- a/src/pool.h
++++ b/src/pool.h
+@@ -10,4 +10,6 @@ class ThreadPool {
+ public:
+     void submit();
++    int capacity;
+ private:
+     std::mutex m_mutex;
++    int count;
+"""
+    private_rule = RULES[0].model_copy(update={"category": "private_member"})
+    public_rule = RULES[0].model_copy(
+        update={"id": "public-no-prefix", "category": "public_field", "value": "(none)"}
+    )
+    scope = DiffScope(files=parse_diff_text_files(diff))
+
+    # private 규칙은 `private:` 아래의 count 만 (capacity 는 public 구역)
+    (finding,) = check_scope(scope, [private_rule])
+    assert "`count`" in finding.title
+
+    # public 규칙 입장에서 capacity 는 접두사가 없어 위반이 아니고, count 는 대상 밖
+    assert check_scope(scope, [public_rule]) == []

@@ -1,10 +1,15 @@
 # 검증용 정답지 — 픽스처 코드가 100% 따르는 컨벤션을 손으로 기술한 파일.
-# 역할 둘: ① checker 주입 검증의 규칙 입력, ② (키 도착 후) `pumpkins learn`이
-# 이 픽스처에서 재현해야 할 기대 출력 (learn 품질 채점의 기준).
+# 역할 둘: ① checker 주입 검증의 규칙 입력, ② `pumpkins learn`이 이 픽스처에서
+# 재현해야 할 기대 출력 (learn 품질 채점의 기준).
+#
+# category 는 추출기가 실제로 내는 이름과 같아야 한다. 멤버가 visibility 로
+# 갈린 뒤에도 여기가 옛 이름(member_variable)이었던 탓에 [5] 채점의 recall 이
+# 67%에 고정돼 있었다 — 모델 등급을 바꿔도 같은 값이 나온 것이 그 신호였다.
+# 픽스처의 멤버는 전부 `private:` 아래 있으므로 private_member 가 맞다.
 version: 1
 rules:
   - id: member-prefix-m_
-    category: member_variable
+    category: private_member
     description: "멤버 변수는 `m_` 접두사를 사용한다"
     facet: prefix
     value: m_
