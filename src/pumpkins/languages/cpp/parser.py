@@ -85,6 +85,12 @@ _MEMBER_RE = re.compile(
 
 _STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"' + r"|'(?:\\.|[^'\\])*'")
 
+# `#include <a/b.h>` / `#include "a/b.h"` → the path between the brackets.
+# Regex rather than AST on purpose: an include line is lexically unambiguous, and
+# the layering check must keep working on machines where tree-sitter is broken —
+# "which layer may depend on which" is too central a rule to lose to a native lib.
+INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]')
+
 _KEYWORDS = {
     "if", "for", "while", "switch", "catch", "return", "sizeof", "new",
     "delete", "throw", "case", "default", "else", "do", "operator",

@@ -24,7 +24,11 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from pumpkins.config import REVIEW_TEMPERATURE, default_review_model
+from pumpkins.config import (
+    DETERMINISTIC_STRUCTURAL_CHECKS,
+    REVIEW_TEMPERATURE,
+    default_review_model,
+)
 from pumpkins.llm.provider import get_client
 from pumpkins.profiles import DEFAULT_PROFILE, Profile, get_profile
 from pumpkins.models import (
@@ -120,9 +124,7 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
-# facet=other rules whose structural `check` the review checker now enforces
-# deterministically (conventions/checker.check_structural). Kept in sync with it.
-_DETERMINISTIC_CHECK_KINDS = {"return_type"}
+
 
 
 def _split_rules(rules: list) -> tuple[list, list]:
@@ -136,7 +138,7 @@ def _split_rules(rules: list) -> tuple[list, list]:
         if r.facet in ("prefix", "suffix", "casing"):
             return True
         check = getattr(r, "check", None)
-        return check is not None and check.kind in _DETERMINISTIC_CHECK_KINDS
+        return check is not None and check.kind in DETERMINISTIC_STRUCTURAL_CHECKS
 
     machine = [r for r in rules if machine_checked(r)]
     return machine, [r for r in rules if r not in machine]

@@ -127,6 +127,22 @@ PUMPKINS_DIRNAME = "pumpkins"
 # Pre-directory layout. Still *read* so existing repos keep working; never written.
 CONVENTIONS_FILENAME = "conventions.yml"
 
+# Structural check kinds the review side enforces deterministically
+# (conventions/checker.check_structural). Single source of truth: the checker
+# reads it to decide what to run, and the LLM prompt reads it to decide what NOT
+# to re-report. When those two lists drifted apart, adding a check kind meant the
+# model repeated every finding the checker had already made.
+#
+# `DETERMINISTIC_STRUCTURAL_AST` is the subset that needs tree-sitter. Layering
+# is deliberately outside it — an `#include` is lexically unambiguous, so the
+# rule most likely to matter survives a machine where the native parser is broken.
+DETERMINISTIC_STRUCTURAL_CHECKS = frozenset(
+    {"return_type", "member_ownership", "base_class", "include_direction"}
+)
+DETERMINISTIC_STRUCTURAL_AST = frozenset(
+    {"return_type", "member_ownership", "base_class"}
+)
+
 # A rule's status IS the subdirectory it lives in, so the two can never drift
 # and `git mv` records who changed it. Only `rules/` is enforced by a review.
 RULE_STATUS_DIRS = {"active": "rules", "candidate": "candidates", "archived": "archive"}

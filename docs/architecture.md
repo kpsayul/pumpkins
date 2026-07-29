@@ -37,12 +37,13 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `report/dump.py` | `--out-dir` 실행 산출물(진단·프롬프트·출처) | review |
 | `conventions/extractor.py` | 이름 통계 — AST로 스캔하고 facet 어휘로 분해 (learn 통계 경로) | learn |
 | `conventions/learner.py` | 통계 → LLM 규칙 판정 + 임계선 게이트 | learn |
-| `conventions/proposer.py` | 틀 없이 코드에서 규칙 추측 (learn 추론 경로) | learn |
+| `conventions/survey.py` | LLM 없이 리포 구조 요약 — 디렉터리·include 방향·클래스/멤버 (1차 훑기 입력) | learn |
+| `conventions/proposer.py` | 틀 없이 코드에서 규칙 추측 — 싼 모델 훑기 → 강한 모델 정독 (learn 추론 경로) | learn |
 | `conventions/verifier.py` | 추측을 리포에 대조·채점 | learn |
-| `conventions/checker.py` | 규칙을 diff와 결정적 대조 (명명=선언 매칭, 구조=AST) | review |
+| `conventions/checker.py` | 규칙을 diff와 결정적 대조 (명명=선언 매칭, 구조=계층/AST) | review |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
-| `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자 스캔 + 구조 규칙 검증 (네이티브 dep, import-가드로 격리) | 공통 |
+| `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자·함수·멤버·클래스 추출 (네이티브 dep, import-가드로 격리) | 공통 |
 | `languages/cpp/parser.py` | 정규식 C++ 파서 — 리뷰 hunk 검사 + AST 폴백 | 공통 |
 | `languages/cpp/naming.py` | facet 어휘 — 이름을 prefix/suffix/casing로 분해 | 공통 |
 | `models.py` | 단계 간 데이터 계약 | 공통 |
@@ -82,18 +83,47 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 ### [B] 추론 경로 (`--infer`, 선택)
 
 ```
-코드 ──▶ 규칙 추측 ──▶ 리포에 대조·채점 ──▶ 후보
-      proposer        verifier                (검증됨 / 기각 / 미검증)
+전체 코드 ──▶ 구조 요약 ──▶ 어디를 볼지 ──▶ 지목된 파일만 ──▶ 규칙 추측 ──▶ 대조·채점 ──▶ 후보
+              survey        (싼 모델)         정독 (강한 모델)    proposer      verifier
+              LLM 없음       triage                                            (검증됨/기각/미검증)
 ```
 
-- **proposer** — facet 틀 **없이** 실제 코드를 LLM에 넣어, 이 리포만의 관행(구조·소유권·레이아웃 등)을
-  자유 형식으로 **추측**한다. 각 추측에 실행 가능한 구조화 check를 붙인다.
+- **survey** — LLM 없이 리포의 *생김새*만 뽑는다: 디렉터리, 디렉터리 간 include 방향,
+  클래스와 그 상속·멤버 타입. 파싱이라 공짜고 결정적이며, 한 프롬프트에 리포 전체가 들어간다.
+- **1차 훑기 (싼 모델)** — 그 요약만 읽고 *"어디에 이 리포만의 관행이 있을 법한가, 어느 파일을 열어보면
+  보이는가"* 만 답한다. 짚이는 곳이 없으면 강한 모델은 **아예 돌지 않는다**.
+- **정독 (강한 모델)** — 지목된 파일 몇 개의 **전문** + 구조 요약을 함께 받아 규칙을 추측하고,
+  각 추측에 실행 가능한 구조화 check를 붙인다.
+  요약을 같이 주는 이유: **총합에만 존재하는 관행이 있다.** "src가 include/를 81번 참조하고 역방향은 0회"는
+  97개 파일에 대한 사실이라 그중 7개를 읽어서는 절대 보이지 않는다 —
+  실측으로, 요약을 주기 전엔 계층 규칙이 하나도 안 나왔다.
 - **verifier** — 그 check를 **리포 전체에 대조해 실측 coverage**를 내고, 통계 경로와 **같은 게이트**로 판정한다.
   - **검증됨** — coverage가 게이트를 넘음. 명명 규칙이면 facet 규칙으로 승격된다.
   - **기각** — coverage 미달. 버린다 (틀린 추측을 거르는 필터).
+    "리포가 반박함"과 "표본이 모자라 판단 불가"는 사람이 할 행동이 달라 **다르게 적는다**.
   - **미검증** — 실행 가능한 check가 없음. `facet: other` 가설로 남는다.
 
 **제안은 열되, 채택은 리포 코드가 잠근다** — 이것이 두 경로의 공통 규율이다(게이트, 그리고 검증).
+
+**모델을 나누는 기준은 파이프라인 단계가 아니라 일의 성질이다.** "여기 뭔가 있나"는 싼 모델이 잘하고,
+"그래서 규칙이 정확히 무엇인가"는 강한 모델이 필요하다 — learn의 쪼개짐 승급과 같은 원리다.
+
+#### 구조 check 어휘
+
+| check | 무엇을 재나 | 분모 | 필요한 것 |
+|---|---|---|---|
+| `naming` | 접두사·접미사·casing | 해당 카테고리의 식별자 | 정규식 |
+| `header_directive` | 헤더 첫 줄 (`#pragma once` 등) | 헤더 파일 | 정규식 |
+| `include_direction` | **계층 방향** — 이 계층이 저 계층을 참조하지 않는다 | **그 계층의 파일** | 정규식 |
+| `return_type` | `create*`는 `unique_ptr`를 반환한다 | 이름이 맞는 함수 | tree-sitter |
+| `member_ownership` | **소유권** — 포인터 멤버를 스마트 포인터로 잡는다 | **포인터를 쥔 멤버** | tree-sitter |
+| `base_class` | **상속** — `*Exception`은 X를 상속한다 | 이름이 맞는 클래스 | tree-sitter |
+
+- **분모는 규칙이 말하는 모집단으로 잡는다.** 값으로 가진 멤버까지 세면 소유권 coverage는
+  "전체 필드 중 스마트 포인터 비율"이 되고, 계층 규칙을 레포 전체로 재면 큰 무관한 코드가
+  어떤 방향 규칙이든 공짜로 통과시킨다. 이 프로젝트가 이미 두 번 치른 실수다.
+- **계층 검사는 일부러 tree-sitter에 기대지 않는다.** `#include`는 한 줄로 읽히고, 셋 중 가장
+  파급이 큰 규칙을 네이티브 빌드 실패로 잃을 이유가 없다.
 
 ### 규칙 저장소 (`pumpkins/`)
 
@@ -138,10 +168,16 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 | 규칙 종류 | 검사 주체 | 재현성 |
 |---|---|---|
 | **명명** (facet prefix/suffix/casing) | convention checker — 정규식, **결정적** | `reproducible=True` → **CI 막을 수 있음** |
-| **구조** (facet=other + `check`, 예 `return_type`) | convention checker — **tree-sitter AST, 결정적** | `reproducible=True` → **CI 막을 수 있음** |
+| **구조** (facet=other + `check`) | convention checker — **결정적** (계층은 정규식, 나머지는 AST) | `reproducible=True` → **CI 막을 수 있음** |
 | 그 외 facet=other (check 없음) | 리뷰 LLM — 프롬프트에 넣어 판정 | `reproducible=False` → 참고용 |
 
-명명과 구조 규칙은 diff를 **결정적으로** 검사한다(정규식 vs AST). check가 없는 관계형/의미적 규칙만 아직 LLM 판단에 머문다.
+명명과 구조 규칙은 diff를 **결정적으로** 검사한다. check가 없는 의미적 규칙만 아직 LLM 판단에 머문다.
+
+구조 규칙도 **diff가 실제로 건드린 것**만 본다 — 바뀐 줄에 선언된 함수·멤버·클래스, 새로 추가된
+`#include`. 뒤늦게 채택한 규칙이 남의 코드까지 전부 지적하면 아무도 쓰지 않기 때문이다.
+
+> 어떤 check 종류를 결정적으로 강제하는지는 `config.DETERMINISTIC_STRUCTURAL_CHECKS` **한 곳**에서 온다.
+> 검사기와 LLM 프롬프트가 각자 목록을 들고 있었을 때, check를 추가하자 같은 지적이 두 번 나왔다.
 
 ## 이 구조를 정하는 원칙
 
@@ -154,6 +190,6 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 
 - **리뷰 프로파일** — `profiles.py`에 (clang-tidy 체크 + LLM 지시) 한 벌을 추가하면 새 검사 축이 된다.
 - **언어** — C++ 지식이 `languages/cpp/`(ast/parser/naming)에 모여 있어, 두 번째 언어는 `languages/<lang>/`로 나란히 놓으면 된다.
-- **추론 check 어휘** — `verifier.py`의 check 종류(naming·header는 정규식, `return_type`은 tree-sitter AST)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp/ast.py` 위에 쌓인다.
+- **추론 check 어휘** — `verifier.py`의 check 종류(위 표)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp/ast.py` 위에 쌓인다. 어떤 종류를 **늘릴지는 추론이 알려준다**: 모델이 계속 제안하는데 돌릴 검사가 없는 종류가 다음에 만들 것이다 (`base_class`가 그렇게 생겼다).
 
 각 확장의 상세 절차는 [extending.md](extending.md), 결정의 근거는 [design-history.md](design-history.md).

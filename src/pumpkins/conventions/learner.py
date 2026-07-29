@@ -142,20 +142,42 @@ class RuleCheck(BaseModel):
     fills it, the review path re-runs it. kind="none" means the rule is not
     mechanically checkable and stays LLM-judged.
 
-    naming/header_directive run on the regex parser; return_type is structural
-    and runs on a tree-sitter AST (conventions/verifier.py, languages/cpp/ast.py).
+    naming/header_directive/include_direction run on the regex parser;
+    return_type and member_ownership are structural and run on a tree-sitter AST
+    (conventions/verifier.py, languages/cpp/ast.py).
+
+    Layering deliberately does NOT need the AST: an include line is lexically
+    unambiguous, and "which layer may depend on which" is too load-bearing a
+    rule to lose on a machine where the native parser failed to build.
     """
 
-    kind: Literal["naming", "header_directive", "return_type", "none"] = "none"
+    kind: Literal[
+        "naming",
+        "header_directive",
+        "return_type",
+        "include_direction",
+        "member_ownership",
+        "base_class",
+        "none",
+    ] = "none"
     # naming
     category: str = ""   # member | function | class_type | constant
     facet: Literal["prefix", "suffix", "casing", ""] = ""
+    # naming: the affix/casing. member_ownership: "smart" | "raw".
     value: str = ""
     # header_directive
     text: str = ""
     # return_type (structural, needs tree-sitter)
     name_prefix: str = ""     # only functions whose name starts with this
     type_contains: str = ""   # ...must return a type whose text contains this
+    # include_direction (layering): files under from_dir must not include
+    # anything belonging to forbidden_dir.
+    from_dir: str = ""
+    forbidden_dir: str = ""
+    # base_class (hierarchy): classes whose name ends in name_suffix derive from
+    # a base whose name contains base_contains.
+    name_suffix: str = ""
+    base_contains: str = ""
 
 
 class ConventionRule(BaseModel):

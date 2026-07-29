@@ -22,6 +22,7 @@ node API (`type`, `child_by_field_name`, `text`).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Iterator
 
@@ -94,12 +95,98 @@ class FunctionDecl:
     line: int = 0
 
 
+@dataclass(frozen=True)
+class MemberDecl:
+    """A data member of a class/struct, and how it holds what it points at.
+
+    `owner` is the enclosing class, `line` the 1-based declaration line — the
+    two things a review needs to say *where*. The pointer flags exist because
+    ownership is the convention people actually argue about: `Widget* m_child`
+    and `std::unique_ptr<Widget> m_child` are the same field to a naming rule
+    and opposite decisions to a reviewer.
+    """
+
+    name: str
+    type_text: str
+    owner: str
+    line: int = 0
+    is_raw_pointer: bool = False
+    is_smart_pointer: bool = False
+
+    @property
+    def holds_pointer(self) -> bool:
+        """Whether this member is part of the ownership question at all.
+
+        This is the denominator for an ownership rule. Members held by value are
+        not a choice between raw and smart, so counting them would drag every
+        measured coverage toward the share of plain `int` fields — the same
+        mistake as measuring casing on single-word lowercase names.
+        """
+        return self.is_raw_pointer or self.is_smart_pointer
+
+
+@dataclass(frozen=True)
+class ClassDecl:
+    """A class/struct declaration and the bases it derives from."""
+
+    name: str
+    bases: list[str]
+    line: int = 0
+
+
+# Types whose raw pointer is conventionally a view, not ownership. Counting
+# `const char* m_name` as an ownership violation would reject true rules on the
+# strength of C-string parameters, so they leave the denominator entirely.
+_NON_OWNING_POINTEE = {
+    "char", "wchar_t", "char8_t", "char16_t", "char32_t", "void", "FILE",
+}
+_SMART_POINTER_HINTS = (
+    "unique_ptr", "shared_ptr", "weak_ptr", "scoped_ptr", "intrusive_ptr",
+)
+
 # Nodes that can carry a function declarator + a return type.
 _FUNCTIONISH = {"function_definition", "declaration", "field_declaration"}
 
 
 def _text(node) -> str:
     return node.text.decode("utf-8", "replace")
+
+
+# An export/visibility macro between `class` and the class name:
+#   class YAML_CPP_API Exception : public std::runtime_error { … };
+# tree-sitter has no preprocessor, so it reads the MACRO as the class name, the
+# real name as a syntax ERROR, and the class body as a function body — which
+# means the class is misnamed AND every one of its members disappears. The
+# pattern is near-universal in libraries that build a DLL (FMT_API, SPDLOG_API,
+# *_EXPORT), so leaving it alone silently corrupts naming statistics for exactly
+# the repos most likely to have conventions worth learning.
+#
+# The lookahead requires a second identifier before `:`/`{`/`;`, so a class
+# genuinely named in caps (`class ERROR {`) is untouched.
+_EXPORT_MACRO_RE = re.compile(
+    r"\b(?:class|struct)\s+([A-Z][A-Z0-9_]{2,})\s+(?=[A-Za-z_]\w*\s*[:{;])"
+)
+
+
+def _strip_export_macros(source: str) -> str:
+    """Blank out export macros in class headers so the declaration parses.
+
+    Replaced with spaces rather than deleted: byte offsets and line numbers must
+    survive, because a structural finding reports the line it was found on.
+    """
+    return _EXPORT_MACRO_RE.sub(
+        lambda m: m.group(0)[: m.start(1) - m.start(0)]
+        + " " * len(m.group(1))
+        + m.group(0)[m.end(1) - m.start(0):],
+        source,
+    )
+
+
+def _parse(source: str):
+    """Parse tree for a C++ source, after making it parseable. None if no parser."""
+    if _LANGUAGE is None:
+        return None
+    return Parser(_LANGUAGE).parse(_strip_export_macros(source).encode("utf-8", "replace"))
 
 
 def _function_declarator(node):
@@ -243,10 +330,108 @@ def scan(source: str) -> Iterator[tuple[str, str]]:
     template parameters are not classes, macros are not functions, and member
     visibility comes from the tree rather than a hunk heuristic. Empty when
     tree-sitter is unavailable — the caller can fall back to the regex scanner."""
-    if _LANGUAGE is None:
+    tree = _parse(source)
+    if tree is None:
         return
-    tree = Parser(_LANGUAGE).parse(source.encode("utf-8", "replace"))
     yield from _iter_declarations(tree.root_node, None)
+
+
+# ------------------------------------------------------- members / ownership
+
+def _contains_pointer_declarator(node) -> bool:
+    """Whether a declarator chain declares a pointer.
+
+    A reference (`T& m_ref`) stops the search: a reference member never owns,
+    so it is neither side of the ownership question and must not be counted as
+    a raw pointer."""
+    if node is None:
+        return False
+    if node.type == "pointer_declarator":
+        return True
+    if node.type == "reference_declarator":
+        return False
+    return any(_contains_pointer_declarator(c) for c in node.children)
+
+
+def _pointee_is_ownable(type_text: str) -> bool:
+    base = type_text.replace("const", " ").replace("volatile", " ").strip()
+    base = base.split("<")[0].split("::")[-1].strip()
+    return base not in _NON_OWNING_POINTEE
+
+
+def _walk_members(node, owner: str, out: list[MemberDecl]) -> None:
+    kind = node.type
+    if kind in ("class_specifier", "struct_specifier"):
+        name_node = node.child_by_field_name("name")
+        inner = _text(name_node) if name_node is not None else owner
+        body = node.child_by_field_name("body")
+        if body is not None:
+            for child in body.children:
+                _walk_members(child, inner, out)
+        return
+
+    if kind == "field_declaration" and owner:
+        declarator = node.child_by_field_name("declarator")
+        if _function_declarator(declarator) is None:  # a data member, not a method
+            name = _variable_name(declarator)
+            if name:
+                type_node = node.child_by_field_name("type")
+                type_text = _text(type_node) if type_node is not None else ""
+                raw = _contains_pointer_declarator(declarator) and _pointee_is_ownable(type_text)
+                out.append(
+                    MemberDecl(
+                        name=name,
+                        type_text=type_text,
+                        owner=owner,
+                        line=node.start_point[0] + 1,
+                        is_raw_pointer=raw,
+                        is_smart_pointer=any(h in type_text for h in _SMART_POINTER_HINTS),
+                    )
+                )
+        return
+
+    for child in node.children:
+        _walk_members(child, owner, out)
+
+
+def members(source: str) -> list[MemberDecl]:
+    """Every data member declared in a C++ source, with its type and ownership shape.
+
+    Returns [] when tree-sitter is unavailable — callers treat that as "cannot
+    verify", never as "no violations"."""
+    tree = _parse(source)
+    if tree is None:
+        return []
+    out: list[MemberDecl] = []
+    _walk_members(tree.root_node, "", out)
+    return out
+
+
+def classes(source: str) -> list[ClassDecl]:
+    """Every class/struct with the bases it derives from — the inheritance edge.
+
+    Feeds the structure survey and the hierarchy check: "all X derive from Y" is
+    visible here long before any function body is read."""
+    tree = _parse(source)
+    if tree is None:
+        return []
+    out: list[ClassDecl] = []
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in ("class_specifier", "struct_specifier"):
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                bases: list[str] = []
+                for child in node.children:
+                    if child.type == "base_class_clause":
+                        bases = [
+                            _text(c) for c in child.children
+                            if c.type in ("type_identifier", "qualified_identifier")
+                        ]
+                out.append(ClassDecl(_text(name_node), bases, node.start_point[0] + 1))
+        stack.extend(node.children)
+    return out
 
 
 def functions(source: str) -> list[FunctionDecl]:
@@ -254,9 +439,9 @@ def functions(source: str) -> list[FunctionDecl]:
 
     Returns [] when tree-sitter is unavailable — callers treat that as "cannot
     verify" rather than a parse failure."""
-    if _LANGUAGE is None:
+    tree = _parse(source)
+    if tree is None:
         return []
-    tree = Parser(_LANGUAGE).parse(source.encode("utf-8", "replace"))
     out: list[FunctionDecl] = []
     stack = [tree.root_node]
     while stack:

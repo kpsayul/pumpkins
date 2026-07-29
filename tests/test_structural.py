@@ -116,6 +116,26 @@ def test_split_rules_treats_structural_check_as_machine_checked():
     assert llm_only in llm_judged
 
 
+def test_every_enforced_check_kind_is_hidden_from_the_llm_prompt():
+    """검사기가 이미 잡는 종류를 LLM 프롬프트에서 빼지 않으면 같은 지적이 두 번 나온다.
+    두 목록이 각자 하드코딩돼 있었을 때 실제로 벌어진 일이라, 이제 한 곳에서 온다."""
+    from pumpkins.config import (
+        DETERMINISTIC_STRUCTURAL_AST,
+        DETERMINISTIC_STRUCTURAL_CHECKS,
+    )
+    from pumpkins.llm.postprocess import _split_rules
+
+    assert DETERMINISTIC_STRUCTURAL_AST <= DETERMINISTIC_STRUCTURAL_CHECKS
+    for kind in DETERMINISTIC_STRUCTURAL_CHECKS:
+        rule = ConventionRule(
+            id=f"x-{kind}", category="structural", description=kind, facet="other",
+            coverage=1.0, occurrences=20, confidence="high",
+            check=RuleCheck(kind=kind),
+        )
+        machine, llm_judged = _split_rules([rule])
+        assert machine == [rule] and llm_judged == [], kind
+
+
 @requires_ts
 def test_cpp_ast_scan_categorizes_declarations():
     # the naming extractor now runs on this: templates/macros handled cleanly,
@@ -135,6 +155,29 @@ def test_cpp_ast_scan_categorizes_declarations():
     assert ("private_member", "m_x") in got
     assert ("public_field", "m_y") in got
     assert ("constant", "kMax") in got             # static constexpr, apart from members
+
+
+@requires_ts
+def test_export_macros_do_not_swallow_a_class():
+    """`class FOO_API Bar : Base` — tree-sitter 에는 전처리기가 없어서 매크로를
+    클래스 이름으로 읽고, 진짜 이름은 문법 오류, 클래스 본문은 함수 본문이 된다.
+    결과는 이름이 틀리는 정도가 아니라 그 클래스의 멤버가 통째로 사라지는 것.
+
+    yaml-cpp 실측: 이 처리를 넣자 private_member 92 → 124 (+35%), public_field
+    74 → 93. 멤버 규칙의 분모가 3분의 1 넘게 틀려 있었다는 뜻이다."""
+    src = (
+        "class YAML_CPP_API Exception : public std::runtime_error {\n"
+        "  int m_x;\n"
+        "  Widget* m_w;\n"
+        "};\n"
+        "class ERROR {};\n"          # 진짜 대문자 이름 — 건드리면 안 된다
+    )
+    assert {c.name: c.bases for c in cpp_ast.classes(src)} == {
+        "Exception": ["std::runtime_error"], "ERROR": []
+    }
+    assert ("private_member", "m_x") in set(cpp_ast.scan(src))
+    # 줄 번호가 보존돼야 한다 — 구조 지적은 자기가 찾은 줄을 보고한다
+    assert [(m.name, m.line) for m in cpp_ast.members(src)] == [("m_x", 2), ("m_w", 3)]
 
 
 @requires_ts

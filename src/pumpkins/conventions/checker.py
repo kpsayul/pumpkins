@@ -24,6 +24,10 @@ from pathlib import Path
 
 from unidiff import PatchSet
 
+from pumpkins.config import (
+    DETERMINISTIC_STRUCTURAL_AST,
+    DETERMINISTIC_STRUCTURAL_CHECKS,
+)
 from pumpkins.conventions.extractor import (
     casing_matches,
     match_identifiers,
@@ -219,8 +223,9 @@ def _suggest_rename(name: str, rule: ConventionRule) -> str:
 
 # ------------------------------------------------ structural (AST) checking
 
-# Rule check kinds this deterministic checker can enforce at review time.
-_STRUCTURAL_CHECK_KINDS = {"return_type"}
+# Which check kinds run here, and which of those need the native parser. Both
+# come from config so the LLM prompt can exclude exactly what this enforces —
+# see config.DETERMINISTIC_STRUCTURAL_CHECKS for why they must not drift.
 
 
 def _line_in_ranges(line: int, ranges) -> bool:
@@ -231,45 +236,165 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
     """Deterministically flag diff violations of verified STRUCTURAL rules.
 
     A naming rule matches identifiers on added lines (check_scope); a structural
-    rule (return_type) needs the parse tree, so this reads the new-side file,
-    parses it (languages/cpp/ast), and flags a function declared on a changed
-    line whose shape breaks the rule. Same detector/severity as check_scope, so
-    a structural finding is reproducible and CI-safe. Runs only where tree-sitter
-    is available — absent, structural rules simply are not enforced here (the
-    LLM stage still sees them).
+    rule asks about shape — what a function returns, how a member holds what it
+    points at, which layer a file is allowed to include. Each is checked against
+    what the diff actually touched, never against the whole file, so an untouched
+    pre-existing violation is not reported as new work.
+
+    Same detector/severity as check_scope: structural findings are reproducible
+    and CI-safe. When the native parser is missing, only the AST-backed kinds
+    drop out — the layering check still runs, and the LLM stage still sees every
+    rule regardless.
     """
     structural = [
         r for r in rules
-        if getattr(r, "check", None) is not None and r.check.kind in _STRUCTURAL_CHECK_KINDS
+        if getattr(r, "check", None) is not None and r.check.kind in DETERMINISTIC_STRUCTURAL_CHECKS
     ]
-    if not structural or not cpp_ast.require("structural review check"):
+    if not structural:
         return []
+    if not cpp_ast.require("structural review check"):
+        structural = [r for r in structural if r.check.kind not in DETERMINISTIC_STRUCTURAL_AST]
+        if not structural:
+            return []
 
     findings: list[Finding] = []
-    seen: set[tuple[str, str, str]] = set()  # (file, rule id, function) — report once
+    seen: set[tuple[str, str, str]] = set()  # (file, rule id, subject) — report once
+    layer_index = _ForbiddenHeaderIndex(repo)
+
     for file_diff in scope.files:
         in_scope = [r for r in structural if r.scope.applies_to(file_diff.path)]
         if not in_scope:
             continue
-        try:
-            text = (repo / file_diff.path).read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            log.debug("structural check: cannot read %s: %s", file_diff.path, exc)
-            continue
-        # Only functions the diff actually touched (declared on a changed line).
-        touched = [f for f in cpp_ast.functions(text) if _line_in_ranges(f.line, file_diff.added_ranges)]
+
+        needs_source = any(r.check.kind in DETERMINISTIC_STRUCTURAL_AST for r in in_scope)
+        text = ""
+        if needs_source:
+            try:
+                text = (repo / file_diff.path).read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                log.debug("structural check: cannot read %s: %s", file_diff.path, exc)
+
+        # Only what the diff touched (declared on a changed line).
+        touched_fns = [
+            f for f in cpp_ast.functions(text)
+            if _line_in_ranges(f.line, file_diff.added_ranges)
+        ] if text else []
+        touched_members = [
+            m for m in cpp_ast.members(text)
+            if _line_in_ranges(m.line, file_diff.added_ranges)
+        ] if text else []
+        touched_classes = [
+            c for c in cpp_ast.classes(text)
+            if _line_in_ranges(c.line, file_diff.added_ranges)
+        ] if text else []
+
         for rule in in_scope:
-            for fn in touched:
-                if not _return_type_violates(fn, rule):
-                    continue
-                key = (file_diff.path, rule.id, fn.name)
+            for subject, finding in _violations(
+                file_diff, rule, touched_fns, touched_members, touched_classes, layer_index
+            ):
+                key = (file_diff.path, rule.id, subject)
                 if key in seen:
                     continue
                 seen.add(key)
-                findings.append(_structural_finding(file_diff.path, fn, rule))
+                findings.append(finding)
 
     log.info("structural check: %d rule(s) → %d finding(s)", len(structural), len(findings))
     return findings
+
+
+def _violations(file_diff, rule, functions, members, classes, layer_index):
+    """Yield (subject, finding) for one rule against one changed file."""
+    kind = rule.check.kind
+    if kind == "return_type":
+        for fn in functions:
+            if _return_type_violates(fn, rule):
+                yield fn.name, _structural_finding(
+                    file_diff.path, fn.line, fn.name,
+                    f"`{fn.name}`의 반환 타입 `{fn.return_type}`", rule,
+                )
+    elif kind == "member_ownership":
+        want_smart = (rule.check.value or "smart").lower() == "smart"
+        for member in members:
+            if not member.holds_pointer:
+                continue
+            conforms = member.is_smart_pointer if want_smart else member.is_raw_pointer
+            if not conforms:
+                yield member.name, _structural_finding(
+                    file_diff.path, member.line, member.name,
+                    f"`{member.owner}::{member.name}`의 타입 `{member.type_text}`", rule,
+                )
+    elif kind == "base_class":
+        suffix, want = rule.check.name_suffix, rule.check.base_contains
+        for cls in classes:
+            if not cls.name.endswith(suffix):
+                continue
+            if not any(want in b for b in cls.bases):
+                derives = ", ".join(cls.bases) if cls.bases else "(상속 없음)"
+                yield cls.name, _structural_finding(
+                    file_diff.path, cls.line, cls.name,
+                    f"`{cls.name}`가 상속하는 것은 `{derives}`", rule,
+                )
+    elif kind == "include_direction":
+        for line_no, target in _added_includes(file_diff):
+            if layer_index.belongs_to(target, rule.check.forbidden_dir):
+                yield target, _structural_finding(
+                    file_diff.path, line_no, target,
+                    f"새로 추가된 `#include \"{target}\"`", rule,
+                )
+
+
+def _added_includes(file_diff) -> list[tuple[int, str]]:
+    """(line number, include target) for `#include`s the diff ADDS.
+
+    Added lines only: a layering rule adopted after the fact will find existing
+    crossings, and reporting those turns every unrelated edit to the file into a
+    wall of complaints about code the author did not write.
+    """
+    try:
+        patched = PatchSet(file_diff.patch_text)[0]
+    except Exception as exc:
+        log.debug("could not re-parse patch for %s: %s", file_diff.path, exc)
+        return []
+    out = []
+    for hunk in patched:
+        for line in hunk:
+            if not line.is_added or line.target_line_no is None:
+                continue
+            m = cpp_parser.INCLUDE_RE.match(line.value)
+            if m:
+                out.append((line.target_line_no, m.group(1)))
+    return out
+
+
+class _ForbiddenHeaderIndex:
+    """Which repo headers live under a given directory, resolved by file name.
+
+    An `#include` is written relative to whatever is on the include path, so its
+    text usually is not the repo-relative path. Names are indexed lazily and
+    cached per directory: a review touching no layering rule pays nothing.
+    """
+
+    def __init__(self, repo: Path):
+        self.repo = repo
+        self._cache: dict[str, set[str]] = {}
+
+    def _names_under(self, directory: str) -> set[str]:
+        d = directory.strip("/")
+        if d not in self._cache:
+            root = self.repo / d
+            self._cache[d] = (
+                {p.name for p in root.rglob("*") if p.is_file()} if root.is_dir() else set()
+            )
+            if not self._cache[d]:
+                log.debug("layering check: no files under %s", directory)
+        return self._cache[d]
+
+    def belongs_to(self, include_target: str, directory: str) -> bool:
+        if not directory.strip():
+            return False
+        if include_target.strip("/").startswith(directory.strip("/") + "/"):
+            return True
+        return include_target.split("/")[-1] in self._names_under(directory)
 
 
 def _return_type_violates(fn, rule: ConventionRule) -> bool:
@@ -280,18 +405,20 @@ def _return_type_violates(fn, rule: ConventionRule) -> bool:
     return check.type_contains not in fn.return_type
 
 
-def _structural_finding(path: str, fn, rule: ConventionRule) -> Finding:
+def _structural_finding(
+    path: str, line: int, subject: str, observed: str, rule: ConventionRule
+) -> Finding:
     reach = "" if rule.scope.is_repo_wide else f", 적용 범위: {rule.scope.describe()}"
     explanation = (
         f"이 리포의 관행({rule.description}) — {rule.occurrences}개 중 {rule.coverage:.0%}가 "
-        f"따릅니다 (근거: `{rule.id}`{reach}). `{fn.name}`의 반환 타입 `{fn.return_type}`은 이와 "
-        f"다른 것 같아요. 의도한 예외라면 무시하셔도 됩니다."
+        f"따릅니다 (근거: `{rule.id}`{reach}). {observed}은 이와 다른 것 같아요. "
+        f"의도한 예외라면 무시하셔도 됩니다."
     )
     return Finding(
         file=path,
-        line=fn.line,
+        line=line,
         severity=Severity.low,  # a convention question never outranks a bug
-        title=f"`{fn.name}` — {rule.description} 관행과 다른 것 같아요",
+        title=f"`{subject}` — {rule.description} 관행과 다른 것 같아요",
         explanation=explanation,
         evidence=Evidence(
             detector=DetectorKind.convention,  # deterministic → reproducible

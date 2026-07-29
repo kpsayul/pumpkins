@@ -21,11 +21,19 @@ from pumpkins.conventions.learner import (
     render_stats_yaml,
 )
 from pumpkins.conventions.proposer import (
+    InferenceLead,
     InferOutcome,
     InferredRule,
     InferredRuleSet,
     RuleInferrer,
+    TriageResult,
     to_convention_rules,
+)
+from pumpkins.conventions.survey import (
+    ClassSummary,
+    RepoSurvey,
+    render as render_survey,
+    survey_repo,
 )
 from pumpkins.conventions.verifier import (
     CheckResult,

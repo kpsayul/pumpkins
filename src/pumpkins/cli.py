@@ -19,6 +19,7 @@ from dotenv import find_dotenv, load_dotenv
 from pumpkins.analysis import ClangTidyRunner
 from pumpkins.analysis.cxx_standard import detect_cxx_standard
 from pumpkins.config import (
+    DETERMINISTIC_STRUCTURAL_CHECKS,
     PUMPKINS_DIRNAME,
     REVIEW_TEMPERATURE,
     CONVENTIONS_FILENAME,
@@ -270,7 +271,16 @@ def build_learn_parser() -> argparse.ArgumentParser:
         f"the statistics path cannot express. Inferred rules are guesses, so they "
         f"land in {PUMPKINS_DIRNAME}/candidates/ as unverified facet=other rules "
         f"for human approval. Opt-in because it sends source code, so it costs "
-        f"more tokens (model: {default_review_model()})",
+        f"more tokens. Runs in two passes: {default_learn_model()} triages a "
+        f"structure map to pick what to read, {default_review_model()} reads "
+        f"only those files",
+    )
+    p.add_argument(
+        "--no-triage",
+        action="store_true",
+        help="with --infer, skip the cheap first pass and hand the strong model "
+        "files in path order instead. Costs more and reads less of the repo's "
+        "structure — use when the triage pass keeps missing the area you care about",
     )
     p.add_argument(
         "--no-llm",
@@ -365,6 +375,25 @@ def _format_reconciliation(root, rec, written, accept_all: bool) -> str:
     return "\n".join(lines)
 
 
+def _format_triage(outcome) -> str:
+    """What the cheap first pass looked at and where it sent the expensive one.
+
+    Shown because the two-stage design makes a claim — most of the repo is not
+    worth reading closely — and the user should be able to check whether the
+    area they care about was among the few files that got read.
+    """
+    lines = ["", f"구조 훑기 ({len(outcome.leads)}곳 지목 → {outcome.files_read}개 파일 정독):"]
+    if not outcome.leads:
+        lines.append("  구조만 봐서는 짚이는 곳이 없었습니다 — 정독은 건너뛰었습니다.")
+    for lead in outcome.leads:
+        lines.append(f"  · {lead.area} — {lead.suspicion}")
+    lines.append(
+        f"  훑기 {outcome.triage_input_tokens + outcome.triage_output_tokens} tok · "
+        f"정독 {outcome.input_tokens + outcome.output_tokens} tok"
+    )
+    return "\n".join(lines)
+
+
 def _format_inference(report) -> str:
     """AI-inferred rules after measuring each against the repo.
 
@@ -382,7 +411,14 @@ def _format_inference(report) -> str:
     if report.verified:
         lines.append("  검증됨 (레포가 뒷받침 — 게이트 통과):")
         for rule in report.verified:
-            enforce = "결정적 검사" if rule.facet != "other" else "LLM 판단"
+            # A structural rule keeps facet="other" but is still enforced by the
+            # deterministic checker. Labelling it "LLM 판단" would understate it:
+            # the user reads this to know whether the rule is CI-safe.
+            deterministic = (
+                rule.facet != "other"
+                or rule.check.kind in DETERMINISTIC_STRUCTURAL_CHECKS
+            )
+            enforce = "결정적 검사" if deterministic else "LLM 판단"
             lines.append(
                 f"    ✓ {rule.description}  ({rule.coverage:.0%}, {rule.occurrences}개 · {enforce})"
             )
@@ -491,8 +527,9 @@ def run_learn(argv: list[str]) -> int:
         # adoption is gated by the repo's own code.
         proposed = list(result.rules)
         report = None
+        outcome = None
         if args.infer:
-            outcome = RuleInferrer().infer(
+            outcome = RuleInferrer(triage=not args.no_triage).infer(
                 args.repo, args.include, args.exclude, args.include_tests
             )
             report = verify_inferred(
@@ -514,6 +551,8 @@ def run_learn(argv: list[str]) -> int:
             split_hypotheses=[s.model_dump() for s in result.split_hypotheses],
         )
         print(_format_reconciliation(root, rec, written, args.accept_all))
+        if outcome is not None and outcome.triaged:
+            print(_format_triage(outcome))
         if report is not None:
             print(_format_inference(report))
         if result.split_hypotheses:

@@ -139,9 +139,16 @@ Stage 4의 계약은 `render_*(result: ReviewResult) -> str`입니다.
 
 C++를 읽는 층이 셋으로 갈려 있습니다(`extractor.py`는 통계만 담당):
 
-- **`cpp/ast.py`** (tree-sitter) — learn 스캔 + 구조 검증의 **주 파서**. 식별자 카테고리·구조는 여기서.
-- **`cpp/parser.py`** (정규식) — 리뷰 hunk 검사 + AST 폴백. 예약어·접근 지정자도 여기.
+- **`cpp/ast.py`** (tree-sitter) — learn 스캔 + 구조 검증의 **주 파서**. 식별자 카테고리, 함수 반환 타입,
+  멤버 소유권(raw/smart), 클래스 상속이 여기서 나옵니다.
+- **`cpp/parser.py`** (정규식) — 리뷰 hunk 검사 + AST 폴백. 예약어·접근 지정자·`#include` 추출도 여기.
 - **`naming.py`** — 이름 facet 어휘(어떤 접두사/casing이 규칙 후보인가). "이름을 어떻게 분해하나"는 여기서.
+
+**전처리기 없는 파서라는 점을 잊지 마세요.** tree-sitter는 매크로를 모릅니다. `class FOO_API Bar : Base`를
+만나면 매크로를 클래스 이름으로 읽고, 진짜 이름은 문법 오류, 클래스 본문은 함수 본문이 됩니다 — 이름이
+틀리는 정도가 아니라 **그 클래스의 멤버가 통째로 사라집니다**. yaml-cpp에서 이걸 고치자 `private_member`
+92 → 124(+35%)였습니다. `_strip_export_macros`가 그 처리이고, 줄 번호가 보존되도록 지우지 않고 공백으로
+바꿉니다(구조 지적은 자기가 찾은 줄을 보고하므로). 비슷한 매크로 패턴을 또 만나면 여기에 붙이세요.
 
 새 카테고리를 추가할 때는 `CATEGORIES`(extractor.py) + `cpp_ast.scan`의 분기(주) + `cpp_parser`(리뷰 hunk·폴백)를
 함께 고치고, **하위 호환을 반드시 생각하세요** — 이미 승인·커밋된 규칙이 새 카테고리 이름을 모르면 조용히 죽습니다.
@@ -199,19 +206,31 @@ LLM이 채우면 안 되는 필드를 `ConventionRule`에 넣으면 모델이 �
 `--infer`는 규칙을 추측한 뒤 **check로 검증**합니다(추측 → 리포에 대조 → 게이트). 새 종류의 규칙을
 기계 검증하려면 check 어휘를 넓히세요:
 
-1. `proposer.py`의 `RuleCheck`에 새 `kind`와 파라미터를 추가하고, 추론 프롬프트(`_INFER_SYSTEM`)에
+1. `learner.py`의 `RuleCheck`에 새 `kind`와 파라미터를 추가하고, 추론 프롬프트(`_INFER_SYSTEM`)에
    그 kind를 언제·어떻게 채우는지 **예시**를 넣으세요 (모델이 자기 규칙과 맞는 check를 붙이도록).
 2. `verifier.py`의 `verify()`에 그 kind를 리포 전체에 대조해 `CheckResult(matches, total)`를 내는
    분기를 추가하세요. `verify_inferred`가 나머지(게이트·분류)를 처리합니다.
-3. 검증된 규칙을 리뷰에서 **결정적으로** 검사하려면 review측 체커도 필요합니다 — 현재는 naming만
-   [checker.py](../src/pumpkins/conventions/checker.py)가 검사하고, 나머지 검증분은 LLM 판단에 머뭅니다.
+3. 리뷰에서 **결정적으로** 검사하려면 `config.DETERMINISTIC_STRUCTURAL_CHECKS`에 kind를 넣고
+   [checker.py](../src/pumpkins/conventions/checker.py)의 `_violations()`에 분기를 추가하세요.
+   AST가 필요하면 `DETERMINISTIC_STRUCTURAL_AST`에도 넣습니다.
+   그 목록을 안 고치면 LLM 프롬프트가 그 규칙을 계속 들고 있어 **같은 지적이 두 번** 나옵니다 —
+   검사기와 프롬프트가 각자 목록을 갖고 있었을 때 실제로 그랬고, 그래서 지금은 config 한 곳에서 옵니다.
+
+**분모를 먼저 정하세요.** check 하나를 만들 때 가장 자주 틀리는 건 세는 방법이 아니라 *무엇으로
+나눌지*입니다. 소유권 규칙의 분모는 전체 멤버가 아니라 **포인터를 쥔 멤버**고, 계층 규칙의 분모는
+레포 전체가 아니라 **그 계층의 파일**입니다. 규칙이 말하는 모집단보다 분모가 넓으면 어떤 주장이든
+조용히 참이 됩니다 — 이 프로젝트가 이미 두 번 치른 값입니다.
 
 원칙은 게이트와 같습니다: 실패 방향을 안전하게(검증 실패 = 기각, 틀린 규칙 채택 아님).
 
-**구조 check**는 [cpp/ast.py](../src/pumpkins/languages/cpp/ast.py)(tree-sitter AST) 위에 쌓습니다 —
-`return_type`이 그 예입니다("create*는 unique_ptr 반환"). tree-sitter는 정식 의존성이지만 **네이티브**라,
-ABI가 깨지면 `verify()`가 `None`을 돌려 그 check만 미검증으로 저하됩니다(무관한 명령은 안 죽음). 계층
-방향·소유권 그래프 같은 관계형 check도 같은 AST 층에 `cpp_ast`의 새 추출 함수 + `verify()` 분기로 추가합니다.
+**어떤 check를 다음에 만들지는 추론이 알려줍니다.** 모델이 반복해서 제안하는데 돌릴 검사가 없는
+종류가 곧 다음 후보입니다 — `base_class`("예외 클래스는 X를 상속한다")가 실제로 그렇게 생겼습니다.
+
+**구조 check**는 [cpp/ast.py](../src/pumpkins/languages/cpp/ast.py)(tree-sitter AST) 위에 쌓습니다.
+tree-sitter는 정식 의존성이지만 **네이티브**라, ABI가 깨지면 `verify()`가 `None`을 돌려 그 check만
+미검증으로 저하됩니다(무관한 명령은 안 죽음). 그래서 **AST 없이 되는 check는 AST에 기대지 마세요** —
+계층 방향(`include_direction`)이 정규식으로 도는 이유입니다. `#include`는 한 줄로 읽히고, 파급이 가장 큰
+규칙을 네이티브 빌드 실패로 잃을 이유가 없습니다.
 
 ## LLM 관련 조정 포인트
 

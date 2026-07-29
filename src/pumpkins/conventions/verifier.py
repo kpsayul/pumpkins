@@ -18,13 +18,22 @@ gated by the repo's own code):
 - unverified — no runnable check (kind="none"). Stays a facet=other guess,
   LLM-judged, reproducible=False (the pre-verification behaviour).
 
-Check vocabulary: naming + header_directive run on the regex parser; return_type
-is the first STRUCTURAL check and runs on a tree-sitter AST (languages/cpp/ast).
-If that native lib is broken/ABI-skewed, the check degrades to "cannot verify"
-(None) rather than crashing. The registry is meant to grow: when inference keeps
-proposing a checkable kind we cannot yet run, that names the next verifier to add
-(demand-driven). Further structural checks (layering, ownership graph) build on
-the same AST layer.
+Check vocabulary, by what it needs to run:
+
+- naming, header_directive, include_direction — the regex parser. Layering is
+  here on purpose: `#include` is lexically unambiguous, so the one structural
+  rule most likely to matter keeps working where the native parser does not.
+- return_type, member_ownership — a tree-sitter AST (languages/cpp/ast). If that
+  native lib is broken/ABI-skewed, these degrade to "cannot verify" (None)
+  rather than crashing or, worse, reporting a clean pass.
+
+Every check's denominator is chosen to be the population the rule is *about*:
+pointer-holding members for ownership, the files of one layer for layering. A
+denominator wider than the rule quietly turns any claim into a true one — the
+recurring failure this project has already paid for twice.
+
+The registry is meant to grow: when inference keeps proposing a checkable kind
+we cannot yet run, that names the next verifier to add (demand-driven).
 """
 
 from __future__ import annotations
@@ -130,6 +139,15 @@ def verify(
             matches += first == text_want
         return CheckResult(matches, len(headers))
 
+    if check.kind == "include_direction":
+        return _verify_include_direction(repo, check, files)
+
+    if check.kind == "member_ownership":
+        return _verify_member_ownership(check, files)
+
+    if check.kind == "base_class":
+        return _verify_base_class(check, files)
+
     if check.kind == "return_type":
         # Structural: needs the AST. Without tree-sitter we cannot measure it, so
         # the rule stays an unverified guess (None), the same safe degradation as
@@ -159,6 +177,121 @@ def verify(
     return None
 
 
+def includes_of(text: str) -> list[str]:
+    """Every `#include` target in a source, as written."""
+    out = []
+    for line in text.splitlines():
+        m = cpp_parser.INCLUDE_RE.match(line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _in_dir(rel_path: str, directory: str) -> bool:
+    d = directory.strip("/")
+    return bool(d) and (rel_path == d or rel_path.startswith(d + "/"))
+
+
+def _verify_include_direction(repo: Path, check: RuleCheck, files: list[Path]) -> CheckResult | None:
+    """Layering: how much of `from_dir` keeps clear of `forbidden_dir`.
+
+    Denominator is the files under from_dir — not every file in the repo. A
+    layering rule says something about one layer, so the rest of the repo has no
+    business diluting it; measuring it repo-wide would let a large unrelated
+    codebase push any direction rule over the gate for free.
+
+    Include targets are resolved by file name against the repo's own files
+    (`#include "widget.h"` rarely spells its repo-relative path), and headers
+    that belong to nobody in the repo are external and simply not layering.
+    """
+    if not check.from_dir.strip() or not check.forbidden_dir.strip():
+        return None
+
+    rel = {p: p.relative_to(repo).as_posix() for p in files}
+    forbidden_names = {
+        p.name for p, r in rel.items() if _in_dir(r, check.forbidden_dir)
+    }
+    scoped = [p for p, r in rel.items() if _in_dir(r, check.from_dir)]
+    if not scoped or not forbidden_names:
+        # Either side empty means the rule is about directories this scan does
+        # not contain — unmeasurable, not "perfectly followed".
+        return None
+
+    clean = 0
+    for path in scoped:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        crosses = any(
+            target.split("/")[-1] in forbidden_names for target in includes_of(text)
+        )
+        clean += not crosses
+    return CheckResult(clean, len(scoped))
+
+
+def _verify_member_ownership(check: RuleCheck, files: list[Path]) -> CheckResult | None:
+    """Ownership: of the members that hold a pointer, how many hold it the stated way.
+
+    The denominator is pointer-holding members only (ast.MemberDecl.holds_pointer).
+    Counting every member would measure "what share of all fields are smart
+    pointers", which is a different question with a much smaller answer — the
+    denominator mistake this project keeps having to avoid.
+    """
+    want = check.value.strip().lower() or "smart"
+    if want not in ("smart", "raw"):
+        return None
+    if not cpp_ast.require("ownership rule verification"):
+        return None
+
+    matches = total = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for member in cpp_ast.members(text):
+            if not member.holds_pointer:
+                continue
+            total += 1
+            matches += member.is_smart_pointer if want == "smart" else member.is_raw_pointer
+    return CheckResult(matches, total)
+
+
+def _verify_base_class(check: RuleCheck, files: list[Path]) -> CheckResult | None:
+    """Hierarchy: of the classes named like the rule says, how many derive as it says.
+
+    Added because a real run asked for it: inference on yaml-cpp proposed "예외
+    클래스는 std::runtime_error를 상속한다" and there was no check to run, so a
+    true and useful rule sat in the unverified pile. The registry grows on
+    demand — a kind we keep being asked for is the next one to build.
+
+    The denominator is classes matching name_suffix, deduped by name: a class
+    declared in a header and referenced elsewhere is one class.
+    """
+    suffix, want = check.name_suffix.strip(), check.base_contains.strip()
+    if not suffix or not want:
+        return None
+    if not cpp_ast.require("hierarchy rule verification"):
+        return None
+
+    seen: dict[str, list[str]] = {}
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for cls in cpp_ast.classes(text):
+            if not cls.name.endswith(suffix):
+                continue
+            # A forward declaration has no bases; a later definition does. Keep
+            # whichever actually says something about the hierarchy.
+            if cls.bases or cls.name not in seen:
+                seen[cls.name] = cls.bases
+    matches = sum(1 for bases in seen.values() if any(want in b for b in bases))
+    return CheckResult(matches, len(seen))
+
+
 @dataclass
 class VerificationReport:
     """The fate of a batch of inferred rules after measuring them."""
@@ -170,6 +303,25 @@ class VerificationReport:
 
 def _confidence(coverage: float) -> str:
     return "high" if coverage >= 0.95 else "medium"
+
+
+def _rejection_reason(result: CheckResult) -> str:
+    """Why a guess did not become a rule — the two failures mean different things.
+
+    "The repo contradicts this" and "there is not enough of it to tell" call for
+    opposite responses from a human: drop the idea, versus write the rule by
+    hand because it is right but the sample is small (a five-file layer can hold
+    a real layering rule). Collapsing both into one message hides that.
+    """
+    if result.coverage < MIN_RULE_CONSISTENCY:
+        return (
+            f"측정 coverage {result.coverage:.0%} ({result.matches}/{result.total}) "
+            f"— 기준 {MIN_RULE_CONSISTENCY:.0%} 미달 (레포가 뒷받침하지 않음)"
+        )
+    return (
+        f"coverage {result.coverage:.0%}는 높지만 사례가 {result.matches}개뿐 "
+        f"— 기준 {MIN_RULE_OCCURRENCES}개 미달 (우연과 구분 불가)"
+    )
 
 
 def verify_inferred(
@@ -198,13 +350,7 @@ def verify_inferred(
             continue
 
         if result.coverage < MIN_RULE_CONSISTENCY or result.matches < MIN_RULE_OCCURRENCES:
-            report.rejected.append(
-                (
-                    desc,
-                    f"측정 coverage {result.coverage:.0%} ({result.matches}/{result.total}) "
-                    f"— 게이트({MIN_RULE_CONSISTENCY:.0%}/{MIN_RULE_OCCURRENCES}회) 미달",
-                )
-            )
+            report.rejected.append((desc, _rejection_reason(result)))
             continue
 
         # Verified. A naming rule becomes a real facet rule the deterministic
