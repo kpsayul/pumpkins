@@ -1,6 +1,6 @@
 """C++ AST via tree-sitter — structural facts the regex parser cannot reach.
 
-[cpp_parser.py](cpp_parser.py) answers "what does a declaration look like" with
+[parser.py](parser.py) answers "what does a declaration look like" with
 regex: enough for naming statistics, blind to structure. Return types, ownership
 (raw vs smart pointer), inheritance and the include graph are relationships a
 regex cannot follow — you need a real parse tree. This module provides that.
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Iterator
 
 log = logging.getLogger(__name__)
 
@@ -53,10 +54,14 @@ class FunctionDecl:
     `return_type` is the text of the type node (e.g. "std::unique_ptr<Widget>");
     a raw-pointer return like `Widget*` shows the pointer in the declarator, not
     here, which is exactly the distinction an ownership convention cares about.
+
+    `line` is the 1-based line where the declaration starts, so the review side
+    can tell which functions a diff actually touched.
     """
 
     name: str
     return_type: str
+    line: int = 0
 
 
 # Nodes that can carry a function declarator + a return type.
@@ -100,6 +105,120 @@ def _return_type(node, func_declarator) -> str:
     return _text(type_node) if type_node is not None else ""
 
 
+# ---------------------------------------------------------- identifier scan
+
+# Same categories the regex scanner (cpp_parser.scan) yields, so the naming
+# extractor can swap parsers without changing its statistics contract.
+_CATEGORIES = ("private_member", "public_field", "constant", "function", "class_type")
+
+
+def _norm_access(text: str) -> str:
+    return "public" if text.strip() == "public" else "private"  # protected folds into private
+
+
+def _is_constant_field(node) -> bool:
+    """`static constexpr` / `static const` — a compile-time constant, named apart
+    from a mutable member. `const T&` (no static) is a member, not a constant."""
+    quals = {
+        c.text.decode() for c in node.children
+        if c.type in ("storage_class_specifier", "type_qualifier")
+    }
+    return "constexpr" in quals or {"static", "const"} <= quals
+
+
+def _plain_named_function(node, func_declarator) -> bool:
+    """Exclude constructors/destructors/operators: a naming stat about "functions"
+    should not be polluted by names that are the class name or `operator=`."""
+    inner = func_declarator.child_by_field_name("declarator")
+    if inner is not None and inner.type in ("operator_name", "destructor_name"):
+        return False
+    # constructors/destructors have no return type
+    if node.child_by_field_name("type") is not None:
+        return True
+    return any(c.type == "trailing_return_type" for c in func_declarator.children)
+
+
+def _variable_name(declarator) -> str:
+    """Descend a member declarator (pointer/reference/array/init wrappers) to its
+    field_identifier."""
+    node = declarator
+    while node is not None:
+        if node.type in ("field_identifier", "identifier"):
+            return _text(node)
+        nxt = node.child_by_field_name("declarator")
+        if nxt is None:
+            nxt = next(
+                (c for c in node.children
+                 if c.type in ("field_identifier", "identifier", "reference_declarator",
+                               "pointer_declarator", "array_declarator", "init_declarator")),
+                None,
+            )
+        node = nxt
+    return ""
+
+
+def _classify_field(node, access: str) -> Iterator[tuple[str, str]]:
+    """A class-body field_declaration → a member function, member var, or constant."""
+    func_decl = _function_declarator(node.child_by_field_name("declarator"))
+    if func_decl is not None:
+        name = _declared_name(func_decl)
+        if name and _plain_named_function(node, func_decl):
+            yield ("function", name)
+        return
+    name = _variable_name(node.child_by_field_name("declarator"))
+    if not name:
+        return
+    if _is_constant_field(node):
+        yield ("constant", name)
+    else:
+        yield ("private_member" if access == "private" else "public_field", name)
+
+
+def _iter_declarations(node, access: str | None) -> Iterator[tuple[str, str]]:
+    kind = node.type
+    if kind in ("class_specifier", "struct_specifier"):
+        name = node.child_by_field_name("name")
+        if name is not None and name.type == "type_identifier":
+            yield ("class_type", _text(name))
+        body = node.child_by_field_name("body")
+        if body is not None:
+            current = "public" if kind == "struct_specifier" else "private"
+            for child in body.children:
+                if child.type == "access_specifier":
+                    current = _norm_access(_text(child))
+                else:
+                    yield from _iter_declarations(child, current)
+        return
+
+    if kind == "field_declaration" and access is not None:
+        yield from _classify_field(node, access)
+        return
+
+    if kind in ("function_definition", "declaration"):
+        func_decl = _function_declarator(node.child_by_field_name("declarator"))
+        if func_decl is not None and access is None:  # a free (non-member) function
+            name = _declared_name(func_decl)
+            if name and _plain_named_function(node, func_decl):
+                yield ("function", name)
+        # recurse into bodies to catch nested types; locals fall through harmlessly
+
+    for child in node.children:
+        yield from _iter_declarations(child, access)
+
+
+def scan(source: str) -> Iterator[tuple[str, str]]:
+    """Yield (category, identifier) for a C++ source — the naming extractor's input.
+
+    Same contract as cpp_parser.scan (the regex scanner), but AST-accurate:
+    template parameters are not classes, macros are not functions, and member
+    visibility comes from the tree rather than a hunk heuristic. Empty when
+    tree-sitter is unavailable — the caller can fall back to the regex scanner."""
+    if _LANGUAGE is None:
+        return
+    tree = Parser(_LANGUAGE).parse(source.encode("utf-8", "replace"))
+    yield from _iter_declarations(tree.root_node, None)
+
+
 def functions(source: str) -> list[FunctionDecl]:
     """Every function/method declaration in a C++ source, with its return type.
 
@@ -117,6 +236,8 @@ def functions(source: str) -> list[FunctionDecl]:
             if func_decl is not None:
                 name = _declared_name(func_decl)
                 if name:
-                    out.append(FunctionDecl(name, _return_type(node, func_decl)))
+                    out.append(
+                        FunctionDecl(name, _return_type(node, func_decl), node.start_point[0] + 1)
+                    )
         stack.extend(node.children)
     return out

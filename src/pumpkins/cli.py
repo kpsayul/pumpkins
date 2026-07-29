@@ -200,9 +200,13 @@ def run_pipeline(args: argparse.Namespace) -> tuple[ReviewResult, RunContext]:
     # Runs with or without an API key (design doc §6-2); the LLM stage above
     # covered the rules this one cannot express.
     if rules:
-        from pumpkins.conventions import check_scope
+        from pumpkins.conventions import check_scope, check_structural
 
-        conv_findings = check_scope(scope, rules)
+        # Naming rules match identifiers on added lines; structural rules
+        # (return_type) parse the new-side file's AST. Both are deterministic
+        # (detector=convention, reproducible) — the loop the inference path opens
+        # is now closed on the review side too.
+        conv_findings = check_scope(scope, rules) + check_structural(scope, rules, args.repo)
         result.findings.extend(conv_findings)
         log.info(
             "conventions: %d rule(s) from %s → %d finding(s)",

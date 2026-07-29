@@ -1,4 +1,4 @@
-from pumpkins.conventions.checker import check_scope, load_conventions
+from pumpkins.conventions.checker import check_scope, check_structural, load_conventions
 from pumpkins.conventions.extractor import (
     CATEGORIES,
     CategoryStats,
@@ -14,6 +14,7 @@ from pumpkins.conventions.learner import (
     LearnOutcome,
     LearnResult,
     RejectedCandidate,
+    RuleCheck,
     SplitAdjudication,
     SplitHypothesis,
     apply_threshold_gate,
@@ -23,7 +24,6 @@ from pumpkins.conventions.proposer import (
     InferOutcome,
     InferredRule,
     InferredRuleSet,
-    RuleCheck,
     RuleInferrer,
     to_convention_rules,
 )

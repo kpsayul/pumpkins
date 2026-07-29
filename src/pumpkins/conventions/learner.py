@@ -134,16 +134,42 @@ A split hypothesis is a question for a human, not a rule. It is never enforced.
 """
 
 
+class RuleCheck(BaseModel):
+    """A machine-executable check attached to a rule.
+
+    Lives here (with the rule schema) rather than in proposer.py so it can be
+    persisted on a ConventionRule without a circular import: the inference path
+    fills it, the review path re-runs it. kind="none" means the rule is not
+    mechanically checkable and stays LLM-judged.
+
+    naming/header_directive run on the regex parser; return_type is structural
+    and runs on a tree-sitter AST (conventions/verifier.py, languages/cpp/ast.py).
+    """
+
+    kind: Literal["naming", "header_directive", "return_type", "none"] = "none"
+    # naming
+    category: str = ""   # member | function | class_type | constant
+    facet: Literal["prefix", "suffix", "casing", ""] = ""
+    value: str = ""
+    # header_directive
+    text: str = ""
+    # return_type (structural, needs tree-sitter)
+    name_prefix: str = ""     # only functions whose name starts with this
+    type_contains: str = ""   # ...must return a type whose text contains this
+
+
 class ConventionRule(BaseModel):
-    """One adopted naming rule — persisted as one file under the repo's pumpkins/.
+    """One adopted rule — persisted as one file under the repo's pumpkins/.
 
-    facet/value make the rule machine-checkable: the review pipeline compares
-    an identifier's split_pattern() facets against them deterministically
-    (conventions/checker.py). facet="other" rules are human-readable only.
+    facet/value make a naming rule machine-checkable: the review pipeline
+    compares an identifier's split_pattern() facets against them deterministically
+    (conventions/checker.py). A `facet="other"` rule is either LLM-judged, or —
+    when it carries a structural `check` (e.g. return_type) — checked
+    deterministically against the diff's AST by the same checker.
 
-    `scope` narrows where the rule is enforced. The LLM never fills it in — it
-    sees statistics, not paths — so it arrives either from the learn scan's own
-    scope or from a human editing the file.
+    `scope` narrows where the rule is enforced. The LLM never fills scope or
+    check in on the statistics path — it sees statistics, not paths — so they
+    arrive from the learn scan's scope, the inference/verify step, or a human.
     """
 
     id: str
@@ -157,6 +183,10 @@ class ConventionRule(BaseModel):
     examples: list[str] = Field(default_factory=list)
     counter_examples: list[str] = Field(default_factory=list)
     scope: RuleScope = Field(default_factory=RuleScope)
+    # A structural check (e.g. return_type) carried to disk so review can re-run
+    # it deterministically. Empty (kind="none") for naming rules, which use
+    # facet/value instead, and for LLM-judged rules.
+    check: RuleCheck = Field(default_factory=RuleCheck)
 
 
 class RejectedCandidate(BaseModel):

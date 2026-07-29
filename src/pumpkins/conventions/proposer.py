@@ -33,13 +33,12 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from pumpkins.config import LEARN_TEMPERATURE, default_reasoning_model
 from pumpkins.conventions.extractor import select_files
-from pumpkins.conventions.learner import ConventionRule
+from pumpkins.conventions.learner import ConventionRule, RuleCheck
 from pumpkins.conventions.scope import RuleScope
 from pumpkins.llm.provider import get_client
 
@@ -92,29 +91,6 @@ For each convention you infer:
 Be conservative: only patterns you actually see repeated. Do not restate
 universal C++ or anything a generic linter owns. Returning few rules is fine.
 """
-
-
-class RuleCheck(BaseModel):
-    """A machine-executable check attached to an inferred rule.
-
-    kind="none" means the rule is not expressible in today's check vocabulary,
-    so it stays an LLM-judged guess (facet=other, reproducible=False). The other
-    kinds are run by conventions/verifier.py to measure real coverage.
-
-    `return_type` is structural — it needs an AST (tree-sitter), so it only runs
-    where the optional dependency is installed; otherwise the rule degrades to
-    an unverified guess like any other uncheckable one."""
-
-    kind: Literal["naming", "header_directive", "return_type", "none"] = "none"
-    # naming
-    category: str = ""   # member | function | class_type | constant
-    facet: Literal["prefix", "suffix", "casing", ""] = ""
-    value: str = ""
-    # header_directive
-    text: str = ""
-    # return_type (structural, needs tree-sitter)
-    name_prefix: str = ""     # only functions whose name starts with this
-    type_contains: str = ""   # ...must return a type whose text contains this
 
 
 class InferredRule(BaseModel):

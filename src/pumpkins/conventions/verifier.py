@@ -19,7 +19,7 @@ gated by the repo's own code):
   LLM-judged, reproducible=False (the pre-verification behaviour).
 
 Check vocabulary: naming + header_directive run on the regex parser; return_type
-is the first STRUCTURAL check and runs on a tree-sitter AST (languages/cpp_ast).
+is the first STRUCTURAL check and runs on a tree-sitter AST (languages/cpp/ast).
 If that native lib is broken/ABI-skewed, the check degrades to "cannot verify"
 (None) rather than crashing. The registry is meant to grow: when inference keeps
 proposing a checkable kind we cannot yet run, that names the next verifier to add
@@ -35,10 +35,9 @@ from pathlib import Path
 
 from pumpkins.config import MIN_RULE_CONSISTENCY, MIN_RULE_OCCURRENCES
 from pumpkins.conventions.extractor import casing_matches, select_files, split_pattern
-from pumpkins.conventions.learner import ConventionRule
+from pumpkins.conventions.learner import ConventionRule, RuleCheck
 from pumpkins.conventions.proposer import (
     InferredRule,
-    RuleCheck,
     _inferred_id,
     to_convention_rules,
 )
@@ -215,10 +214,14 @@ def verify_inferred(
             category = "member_variable" if r.check.category in _MEMBER_CATS else r.check.category
             rule_id = _inferred_id(f"{category}-{r.check.facet}-{r.check.value}", taken)
             facet, value = r.check.facet, r.check.value
+            check = RuleCheck()  # naming uses facet/value; no separate check needed
         else:
             category = r.kind or "layout"
             rule_id = _inferred_id(desc, taken)
             facet, value = "other", ""
+            # Carry the check to disk so the review side can re-run it
+            # deterministically (structural rules like return_type).
+            check = r.check
 
         report.verified.append(
             ConventionRule(
@@ -232,6 +235,7 @@ def verify_inferred(
                 confidence=_confidence(result.coverage),
                 examples=[r.evidence] if r.evidence else [],
                 scope=scope.model_copy(deep=True),
+                check=check,
             )
         )
     return report

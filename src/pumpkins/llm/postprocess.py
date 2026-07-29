@@ -120,13 +120,25 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
+# facet=other rules whose structural `check` the review checker now enforces
+# deterministically (conventions/checker.check_structural). Kept in sync with it.
+_DETERMINISTIC_CHECK_KINDS = {"return_type"}
+
+
 def _split_rules(rules: list) -> tuple[list, list]:
     """Rules the deterministic checker already handles vs. the rest.
 
-    Without this split the model re-reports every naming violation the regex
-    checker just reported, and the user sees each one twice.
+    Without this split the model re-reports every violation the checker just
+    reported, and the user sees each one twice. Naming rules (prefix/suffix/
+    casing) and structural rules with an enforced check both count as machine.
     """
-    machine = [r for r in rules if r.facet in ("prefix", "suffix", "casing")]
+    def machine_checked(r) -> bool:
+        if r.facet in ("prefix", "suffix", "casing"):
+            return True
+        check = getattr(r, "check", None)
+        return check is not None and check.kind in _DETERMINISTIC_CHECK_KINDS
+
+    machine = [r for r in rules if machine_checked(r)]
     return machine, [r for r in rules if r not in machine]
 
 

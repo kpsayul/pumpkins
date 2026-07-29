@@ -32,7 +32,7 @@ from pumpkins.conventions.extractor import (
 )
 from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.store import load_active_rules
-from pumpkins.languages import cpp_parser
+from pumpkins.languages import cpp_ast, cpp_parser
 from pumpkins.models import DetectorKind, DiffScope, Evidence, Finding, Severity
 
 log = logging.getLogger(__name__)
@@ -204,3 +204,89 @@ def _suggest_rename(name: str, rule: ConventionRule) -> str:
     if renamed == name:
         return ""
     return f"관행에 맞추면 `{renamed}` 이 됩니다."
+
+
+# ------------------------------------------------ structural (AST) checking
+
+# Rule check kinds this deterministic checker can enforce at review time.
+_STRUCTURAL_CHECK_KINDS = {"return_type"}
+
+
+def _line_in_ranges(line: int, ranges) -> bool:
+    return any(r.start <= line <= r.end for r in ranges)
+
+
+def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) -> list[Finding]:
+    """Deterministically flag diff violations of verified STRUCTURAL rules.
+
+    A naming rule matches identifiers on added lines (check_scope); a structural
+    rule (return_type) needs the parse tree, so this reads the new-side file,
+    parses it (languages/cpp/ast), and flags a function declared on a changed
+    line whose shape breaks the rule. Same detector/severity as check_scope, so
+    a structural finding is reproducible and CI-safe. Runs only where tree-sitter
+    is available — absent, structural rules simply are not enforced here (the
+    LLM stage still sees them).
+    """
+    structural = [
+        r for r in rules
+        if getattr(r, "check", None) is not None and r.check.kind in _STRUCTURAL_CHECK_KINDS
+    ]
+    if not structural or not cpp_ast.available():
+        return []
+
+    findings: list[Finding] = []
+    seen: set[tuple[str, str, str]] = set()  # (file, rule id, function) — report once
+    for file_diff in scope.files:
+        in_scope = [r for r in structural if r.scope.applies_to(file_diff.path)]
+        if not in_scope:
+            continue
+        try:
+            text = (repo / file_diff.path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            log.debug("structural check: cannot read %s: %s", file_diff.path, exc)
+            continue
+        # Only functions the diff actually touched (declared on a changed line).
+        touched = [f for f in cpp_ast.functions(text) if _line_in_ranges(f.line, file_diff.added_ranges)]
+        for rule in in_scope:
+            for fn in touched:
+                if not _return_type_violates(fn, rule):
+                    continue
+                key = (file_diff.path, rule.id, fn.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                findings.append(_structural_finding(file_diff.path, fn, rule))
+
+    log.info("structural check: %d rule(s) → %d finding(s)", len(structural), len(findings))
+    return findings
+
+
+def _return_type_violates(fn, rule: ConventionRule) -> bool:
+    """A function matching the rule's name prefix whose return type breaks it."""
+    check = rule.check
+    if not fn.name.startswith(check.name_prefix):
+        return False
+    return check.type_contains not in fn.return_type
+
+
+def _structural_finding(path: str, fn, rule: ConventionRule) -> Finding:
+    reach = "" if rule.scope.is_repo_wide else f", 적용 범위: {rule.scope.describe()}"
+    explanation = (
+        f"이 리포의 관행({rule.description}) — {rule.occurrences}개 중 {rule.coverage:.0%}가 "
+        f"따릅니다 (근거: `{rule.id}`{reach}). `{fn.name}`의 반환 타입 `{fn.return_type}`은 이와 "
+        f"다른 것 같아요. 의도한 예외라면 무시하셔도 됩니다."
+    )
+    return Finding(
+        file=path,
+        line=fn.line,
+        severity=Severity.low,  # a convention question never outranks a bug
+        title=f"`{fn.name}` — {rule.description} 관행과 다른 것 같아요",
+        explanation=explanation,
+        evidence=Evidence(
+            detector=DetectorKind.convention,  # deterministic → reproducible
+            rule_id=rule.id,
+            occurrences=rule.occurrences,
+            coverage=rule.coverage,
+            rule_scope=rule.scope.describe(),
+        ),
+    )
