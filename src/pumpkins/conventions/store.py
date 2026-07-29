@@ -51,6 +51,7 @@ from pumpkins.config import (
 from pumpkins.conventions.extractor import CategoryStats
 from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.scope import RuleScope
+from pumpkins.languages.cpp import ast as cpp_ast
 
 log = logging.getLogger(__name__)
 
@@ -291,7 +292,13 @@ def write_scan_report(
         "model": model,
         "repo": str(repo),
         # 규칙을 재현하려면 무엇을 읽었는지가 필요하다.
-        "scan": {"files": scanned_files, **(scan_scope or RuleScope()).model_dump()},
+        "scan": {
+            "files": scanned_files,
+            # 어떤 스캐너가 읽었는지 — 폴백이면 통계가 달라지고 따라서
+            # 규칙도 달라진다. 두 리포트를 비교할 때 먼저 봐야 할 값이다.
+            "engine": cpp_ast.engine(),
+            **(scan_scope or RuleScope()).model_dump(),
+        },
         "thresholds": {
             "min_occurrences": MIN_RULE_OCCURRENCES,
             "min_consistency": MIN_RULE_CONSISTENCY,

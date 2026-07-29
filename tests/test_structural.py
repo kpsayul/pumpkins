@@ -3,6 +3,8 @@
 Real tree-sitter when installed (skipped otherwise); the graceful-degradation
 path is tested without it by monkeypatching availability off."""
 
+import os
+
 import pytest
 
 from pumpkins.conventions import (
@@ -18,8 +20,24 @@ from pumpkins.conventions import verifier as verifier_mod
 from pumpkins.languages.cpp import ast as cpp_ast
 from pumpkins.models import DiffScope, FileDiff, LineRange
 
+# tree-sitter 는 선택 사양이 아니라 선언된 필수 의존성이다. 없으면 통계가 달라져
+# 규칙까지 달라지므로, 조용히 건너뛰면 "전부 통과"가 거짓말이 된다 — 실제로 한
+# 환경에서 이 파일 10개가 통째로 skip 된 채 초록불로 보고됐다.
+#
+# 그래서 기본은 실패다. 네이티브 빌드가 막힌 환경에서 나머지를 돌려야 한다면
+# PUMPKINS_ALLOW_NO_TREE_SITTER=1 로 의도를 밝히고 건너뛴다.
+_ALLOW_MISSING = os.environ.get("PUMPKINS_ALLOW_NO_TREE_SITTER") == "1"
+
+if not cpp_ast.available() and not _ALLOW_MISSING:
+    pytest.fail(
+        f"tree-sitter unavailable — {cpp_ast.unavailable_reason()}. "
+        "구조 검사 전체가 검증되지 않은 상태입니다. 설치하거나, 의도한 것이라면 "
+        "PUMPKINS_ALLOW_NO_TREE_SITTER=1 로 명시하세요.",
+        pytrace=False,
+    )
+
 requires_ts = pytest.mark.skipif(
-    not cpp_ast.available(), reason="tree-sitter (structural extra) not installed"
+    not cpp_ast.available(), reason="PUMPKINS_ALLOW_NO_TREE_SITTER=1 (명시적 건너뛰기)"
 )
 
 
@@ -205,7 +223,9 @@ def test_verify_inferred_rejects_a_wrong_structural_guess(tmp_path):
 
 def test_structural_check_degrades_to_unverified_without_tree_sitter(tmp_path, monkeypatch):
     (tmp_path / "a.h").write_text("std::unique_ptr<A> createA();\n", encoding="utf-8")
-    monkeypatch.setattr(verifier_mod.cpp_ast, "available", lambda: False)
+    # require() 는 available() 을 감싸며 "왜 못 쓰는지"를 한 번 경고한다.
+    # 호출부가 보는 것은 require() 이므로 여기를 막아야 실제 폴백을 재현한다.
+    monkeypatch.setattr(verifier_mod.cpp_ast, "require", lambda purpose: False)
 
     check = RuleCheck(kind="return_type", name_prefix="create", type_contains="unique_ptr")
     assert verify(tmp_path, check) is None   # cannot verify → not a silent pass

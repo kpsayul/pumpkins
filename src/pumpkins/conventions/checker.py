@@ -242,7 +242,7 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
         r for r in rules
         if getattr(r, "check", None) is not None and r.check.kind in _STRUCTURAL_CHECK_KINDS
     ]
-    if not structural or not cpp_ast.available():
+    if not structural or not cpp_ast.require("structural review check"):
         return []
 
     findings: list[Finding] = []

@@ -135,7 +135,7 @@ def verify(
         # the rule stays an unverified guess (None), the same safe degradation as
         # any other uncheckable rule — never a silent pass.
         want = check.type_contains.strip()
-        if not want or not cpp_ast.available():
+        if not want or not cpp_ast.require("structural rule verification"):
             return None
         prefix = check.name_prefix
         # Dedup by name: a function declared in a header and defined in a source

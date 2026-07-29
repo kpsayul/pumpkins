@@ -14,11 +14,15 @@ dependencies = [
     "unidiff>=0.7",
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    # Structural (AST) checks for `learn --infer`. Native/ABI-fragile, so
-    # languages/cpp_ast.py import-guards it — a broken install degrades that one
-    # check instead of crashing unrelated commands (see the module docstring).
-    "tree-sitter>=0.23",
-    "tree-sitter-cpp>=0.23",
+    # Structural (AST) checks. Native and ABI-fragile: the two packages must
+    # agree on the C ABI, and the Python API changed across 0.21→0.22→0.23.
+    # Upper bounds are what actually prevents the common failure — an
+    # unconstrained upgrade of one half skewing against the other. They cannot
+    # prevent "no wheel for this platform and no compiler"; that needs build
+    # tools. So the import is still guarded (languages/cpp/ast.py) and the
+    # fallback now announces itself instead of silently changing results.
+    "tree-sitter>=0.23,<0.27",
+    "tree-sitter-cpp>=0.23,<0.24",
 ]
 
 [project.optional-dependencies]

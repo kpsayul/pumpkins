@@ -47,6 +47,36 @@ def unavailable_reason() -> str:
     return f"tree-sitter not available ({_IMPORT_ERROR})" if _IMPORT_ERROR else ""
 
 
+_warned: set[str] = set()
+
+
+def require(purpose: str) -> bool:
+    """Whether AST work can run — and say so, once, when it cannot.
+
+    Falling back is not free: the regex scanner reads templates, macros and
+    multi-line declarations differently, so the *statistics change* and with
+    them the rules a repo learns. A degradation that changes results and says
+    nothing is the same failure the review report was fixed to avoid — silence
+    that reads as success.
+    """
+    if _LANGUAGE is not None:
+        return True
+    if purpose not in _warned:
+        _warned.add(purpose)
+        log.warning(
+            "%s: %s — falling back to the regex scanner. Results will differ "
+            "from a machine with tree-sitter installed. Fix with: "
+            "pip install --force-reinstall 'tree-sitter>=0.23,<0.27' 'tree-sitter-cpp>=0.23,<0.24'",
+            purpose, unavailable_reason(),
+        )
+    return False
+
+
+def engine() -> str:
+    """Which scanner is in use — recorded in run provenance because it changes results."""
+    return "tree-sitter" if _LANGUAGE is not None else "regex-fallback"
+
+
 @dataclass(frozen=True)
 class FunctionDecl:
     """A function/method declaration or definition, and its declared return type.

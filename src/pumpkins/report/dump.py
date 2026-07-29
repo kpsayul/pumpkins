@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pumpkins import __version__
+from pumpkins.languages.cpp import ast as cpp_ast
 from pumpkins.models import DiffScope, RawDiagnostic, ReviewResult
 
 log = logging.getLogger(__name__)
@@ -122,6 +123,11 @@ def dump_run(
                 "profile": result.profile,
                 "analysis_mode": "shallow" if result.shallow_mode else "compile-db",
                 "clang_tidy_version": context.tool_version,
+                # Which scanner read the code. The regex fallback reads
+                # templates and macros differently, so two runs that differ
+                # here are not comparable — same reason model/temperature are
+                # recorded.
+                "ast_engine": cpp_ast.engine(),
                 "llm": {
                     "used": result.llm_used,
                     "provider": result.provider,

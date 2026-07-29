@@ -145,7 +145,8 @@ def _scan_file(path: Path) -> Iterator[tuple[str, str]]:
     except OSError as exc:
         log.debug("skipping unreadable file %s: %s", path, exc)
         return
-    yield from (cpp_ast.scan(text) if cpp_ast.available() else cpp_parser.scan(text))
+    use_ast = cpp_ast.require("learn scan")
+    yield from (cpp_ast.scan(text) if use_ast else cpp_parser.scan(text))
 
 
 def select_files(
