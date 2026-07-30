@@ -43,6 +43,7 @@ git diff → clang-tidy 정적 분석 → LLM(Claude/GPT 선택 가능) 후처�
 
 | 문서 | 내용 |
 |---|---|
+| **[docs/next-steps.md](docs/next-steps.md)** | **작업 이어서 할 때 여기부터** — 환경 확인, 지금 상태, 할 일 순서와 근거, 병렬 작업 경계 |
 | [docs/architecture.md](docs/architecture.md) | **현재 구조** — 두 국면(learn/review), 모듈 지도, 데이터 계약, 규칙이 적용되는 방식. 구조만, 추상적으로 |
 | [docs/convention-detection-design.md](docs/convention-detection-design.md) | **핵심 기능 설계 검토** — 사람 리뷰어의 지적을 자동화하는 방안(A/B/C), 설계 결정, 리스크, MVP 경로 |
 | [docs/design-history.md](docs/design-history.md) | **시행착오·측정 기록** — 실제 리포에서 발견해 고친 것, 판단의 근거. "왜 이렇게 됐나"의 히스토리(구조 아님) |
@@ -410,7 +411,8 @@ pytest
 **검사를 AI가 쓰게 하기** — 내장 6종 밖의 관행(const 정확성, override, 네임스페이스 배치)도 AI가
 tree-sitter 질의를 써서 측정.
 
-**다음:**
+**다음:** 순서·근거·고칠 파일까지 정리한 작업 문서는 **[docs/next-steps.md](docs/next-steps.md)** 에 있습니다.
+아래는 요약입니다.
 
 1. **모델이 질의를 더 잘 쓰게 하기** — 기계는 준비됐지만 실제 실행에서 `query` 사용률이 낮고, 쓸 때도
    조건 질의가 0건을 매칭하는 경우가 있다. 그 실패는 이제 *"질의가 조건을 잘못 표현했다"* 로 구분해

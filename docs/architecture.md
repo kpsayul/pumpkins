@@ -1,6 +1,7 @@
 # 아키텍처
 
 > pumpkins의 **현재 구조**를 추상적으로 설명합니다 — 무엇이 어떤 책임을 지고, 무엇으로 연결되는가.
+> 작업을 이어서 하려면 [next-steps.md](next-steps.md) 를 먼저 보세요.
 > *"왜 이렇게 됐나"*(측정·시행착오·판단 근거)는 [design-history.md](design-history.md)에 있습니다.
 > 실행 방법은 [README](../README.md), 컨벤션 축의 설계 배경은 [convention-detection-design.md](convention-detection-design.md).
 
