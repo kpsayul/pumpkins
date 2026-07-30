@@ -144,10 +144,10 @@ CONVENTIONS_FILENAME = "conventions.yml"
 # is deliberately outside it — an `#include` is lexically unambiguous, so the
 # rule most likely to matter survives a machine where the native parser is broken.
 DETERMINISTIC_STRUCTURAL_CHECKS = frozenset(
-    {"return_type", "member_ownership", "base_class", "include_direction"}
+    {"return_type", "member_ownership", "base_class", "include_direction", "query"}
 )
 DETERMINISTIC_STRUCTURAL_AST = frozenset(
-    {"return_type", "member_ownership", "base_class"}
+    {"return_type", "member_ownership", "base_class", "query"}
 )
 
 # A rule's status IS the subdirectory it lives in, so the two can never drift

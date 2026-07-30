@@ -158,6 +158,7 @@ class RuleCheck(BaseModel):
         "include_direction",
         "member_ownership",
         "base_class",
+        "query",
         "none",
     ] = "none"
     # naming
@@ -178,6 +179,14 @@ class RuleCheck(BaseModel):
     # a base whose name contains base_contains.
     name_suffix: str = ""
     base_contains: str = ""
+    # query (open-ended): a pair of tree-sitter queries, each capturing the node
+    # under judgement as @subject. `population` is the denominator — the sites the
+    # rule is about — and `conforming` the subset that satisfies it. This is the
+    # kind that does not need a new code branch per convention; the six above
+    # stay because they are cheaper and because a verified `naming` rule feeds the
+    # facet checker. See languages/cpp/query.py.
+    population_query: str = ""
+    conforming_query: str = ""
 
 
 class ConventionRule(BaseModel):

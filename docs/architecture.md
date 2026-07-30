@@ -44,6 +44,7 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
 | `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자·함수·멤버·클래스 추출, **매크로 펼치기**(리포의 `#define` 기반), **파싱 건강상태 측정** (네이티브 dep, import-가드로 격리) | 공통 |
+| `languages/cpp/query.py` | tree-sitter 질의 — AI가 쓴 검사를 컴파일·실행, 노드 어휘 추출 (버전 차이를 여기서만 흡수) | 공통 |
 | `languages/cpp/parser.py` | 정규식 C++ 파서 — 리뷰 hunk 검사 + AST 폴백 | 공통 |
 | `languages/cpp/naming.py` | facet 어휘 — 이름을 prefix/suffix/casing로 분해 | 공통 |
 | `models.py` | 단계 간 데이터 계약 | 공통 |
@@ -118,6 +119,15 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `return_type` | `create*`는 `unique_ptr`를 반환한다 | 이름이 맞는 함수 | tree-sitter |
 | `member_ownership` | **소유권** — 포인터 멤버를 스마트 포인터로 잡는다 | **포인터를 쥔 멤버** | tree-sitter |
 | `base_class` | **상속** — `*Exception`은 X를 상속한다 | 이름이 맞는 클래스 | tree-sitter |
+| **`query`** | **그 밖의 모든 것** — AI가 검사를 직접 써낸다 | **AI가 명시한 모집단** | tree-sitter |
+
+`query`가 나머지 여섯과 다른 점: 나머지는 제가 파이썬으로 쓴 분기이고, `query`는 **AI가 써낸 두 개의
+질의**다. `population`(분모 — 규칙이 다루는 자리)과 `conforming`(분자 — 만족하는 자리), 둘 다 판정 대상을
+`@subject`로 잡는다. coverage = |조건 ∩ 모집단| / |모집단|.
+
+**분모를 필수 칸으로 만든 것이 핵심이다.** 이 프로젝트가 치른 측정 버그는 전부 분모가 주장보다 넓었던
+경우였다 — casing 을 casing 신호 없는 이름까지 세고, 소유권을 포인터 아닌 멤버까지 세고, 계층을 레포
+전체로 잰 것. 모집단을 반드시 적어야 하는 형식이면 그 판단을 건너뛸 수 없다.
 
 - **분모는 규칙이 말하는 모집단으로 잡는다.** 값으로 가진 멤버까지 세면 소유권 coverage는
   "전체 필드 중 스마트 포인터 비율"이 되고, 계층 규칙을 레포 전체로 재면 큰 무관한 코드가
@@ -191,6 +201,6 @@ git diff ─┬─▶ clang-tidy ──────────────┐  
 
 - **리뷰 프로파일** — `profiles.py`에 (clang-tidy 체크 + LLM 지시) 한 벌을 추가하면 새 검사 축이 된다.
 - **언어** — C++ 지식이 `languages/cpp/`(ast/parser/naming)에 모여 있어, 두 번째 언어는 `languages/<lang>/`로 나란히 놓으면 된다.
-- **추론 check 어휘** — `verifier.py`의 check 종류(위 표)를 늘리면 추론 규칙의 검증 범위가 넓어진다. 구조 check는 `cpp/ast.py` 위에 쌓인다. 어떤 종류를 **늘릴지는 추론이 알려준다**: 모델이 계속 제안하는데 돌릴 검사가 없는 종류가 다음에 만들 것이다 (`base_class`가 그렇게 생겼다).
+- **추론 check 어휘** — `query`가 생긴 뒤로는 새 종류를 위해 코드를 고칠 일이 원칙적으로 없다. 나머지 여섯은 자주 쓰이는 경우의 지름길로 남아 있고(더 싸고, 검증된 `naming` 규칙은 facet 검사기로 이어진다), 그 밖은 AI가 질의로 쓴다. 지름길을 새로 만들 가치가 있는지는 `검사 종류` 집계가 알려준다.
 
 각 확장의 상세 절차는 [extending.md](extending.md), 결정의 근거는 [design-history.md](design-history.md).

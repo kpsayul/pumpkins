@@ -448,6 +448,14 @@ def _format_inference(report) -> str:
         lines.append("  미검증 (기계로 잴 수 없어 사람 판단 — facet=other):")
         for rule in report.unverified:
             lines.append(f"    ~ {rule.description}")
+    lines.append(f"  검사 종류: {report.kind_summary()}")
+    if report.bad_queries:
+        # The query kind's whole value is that the model is no longer limited to a
+        # fixed list. If its queries do not compile, that value is not being
+        # delivered — and the only way to know is to count it.
+        lines.append(f"  질의 컴파일 실패 {len(report.bad_queries)}건:")
+        for q in report.bad_queries[:3]:
+            lines.append(f"      {q}")
     lines.append("  검증됨·미검증만 candidates/에 저장됩니다 — 승인 전엔 리뷰에 영향 없음.")
     return "\n".join(lines)
 

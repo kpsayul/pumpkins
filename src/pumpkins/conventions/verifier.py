@@ -39,6 +39,7 @@ we cannot yet run, that names the next verifier to add (demand-driven).
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +57,11 @@ from pumpkins.conventions.proposer import (
     to_convention_rules,
 )
 from pumpkins.conventions.scope import RuleScope
-from pumpkins.languages.cpp import ast as cpp_ast, parser as cpp_parser
+from pumpkins.languages.cpp import (
+    ast as cpp_ast,
+    parser as cpp_parser,
+    query as cpp_query,
+)
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +157,9 @@ def verify(
 
     if check.kind == "base_class":
         return _verify_base_class(check, files, collect_macros(repo, files))
+
+    if check.kind == "query":
+        return _verify_query(check, files, collect_macros(repo, files))
 
     if check.kind == "return_type":
         # Structural: needs the AST. Without tree-sitter we cannot measure it, so
@@ -302,6 +310,46 @@ def _verify_base_class(
     return CheckResult(matches, len(seen))
 
 
+def _verify_query(
+    check: RuleCheck, files: list[Path], macros: cpp_ast.MacroTable
+) -> CheckResult | None:
+    """Measure a model-authored pair of queries across the repo.
+
+    This is the branch that ends the enumeration: any convention the model can
+    express as "these sites, and this is what they should look like" becomes
+    measurable without new code here.
+
+    The denominator comes from `population_query`, so it is the rule's own claim
+    about what it governs rather than something this function decided. An empty
+    population means unmeasurable (None), never "perfectly followed" — the same
+    distinction every other check makes.
+    """
+    population = cpp_query.compile_query(check.population_query)
+    conforming = cpp_query.compile_query(check.conforming_query)
+    if population is None or conforming is None:
+        return None
+    if not cpp_ast.require("query rule verification"):
+        return None
+
+    matches = total = 0
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        tree = cpp_ast.parse_tree(text, macros)
+        if tree is None:
+            return None
+        # One tree for both queries: spans are only comparable within a parse.
+        in_population = population.subjects(tree)
+        if not in_population:
+            continue
+        satisfied = conforming.subjects(tree)
+        total += len(in_population)
+        matches += len(in_population.keys() & satisfied.keys())
+    return CheckResult(matches, total) if total else None
+
+
 @dataclass
 class VerificationReport:
     """The fate of a batch of inferred rules after measuring them."""
@@ -309,20 +357,56 @@ class VerificationReport:
     verified: list[ConventionRule] = field(default_factory=list)
     unverified: list[ConventionRule] = field(default_factory=list)
     rejected: list[tuple[str, str]] = field(default_factory=list)  # (description, reason)
+    # Which check kinds the model actually reached for, and how many queries it
+    # wrote that would not compile. Instrumentation, not decoration: the point of
+    # the `query` kind is that the model stops being limited to a fixed list, and
+    # a capability nobody measures is a capability nobody knows is unused.
+    kinds: Counter = field(default_factory=Counter)
+    bad_queries: list[str] = field(default_factory=list)
+
+    def kind_summary(self) -> str:
+        return ", ".join(f"{k}×{n}" for k, n in self.kinds.most_common()) or "없음"
 
 
 def _confidence(coverage: float) -> str:
     return "high" if coverage >= 0.95 else "medium"
 
 
-def _rejection_reason(result: CheckResult) -> str:
-    """Why a guess did not become a rule — the two failures mean different things.
+# A check whose population is substantial but whose conforming side matches
+# NOTHING is almost never a repo that violates its own convention everywhere —
+# it is a check that failed to express the condition. Below this population size
+# 0% could be a genuine tiny sample, so the distinction only applies above it.
+MIN_POPULATION_FOR_BROKEN_CHECK = 10
 
-    "The repo contradicts this" and "there is not enough of it to tell" call for
-    opposite responses from a human: drop the idea, versus write the rule by
-    hand because it is right but the sample is small (a five-file layer can hold
-    a real layering rule). Collapsing both into one message hides that.
+
+def _rejection_reason(result: CheckResult, kind: str = "") -> str:
+    """Why a guess did not become a rule — the failures mean different things.
+
+    Three, and a human does something different for each:
+
+    - the repo contradicts it        → drop the idea
+    - too few instances to tell      → the rule may be right; write it by hand
+    - the check matched nothing at all → the *check* is wrong, not the rule
+
+    The third one matters most for model-authored queries. Measured live: the
+    model wrote a population query that correctly found all 52 members, and a
+    conforming query that matched none of them. Reporting that as "coverage 0% —
+    the repo does not back this" blames the repo for a broken query and hides the
+    one thing worth fixing.
     """
+    # Only for `query`, where the conforming side is free-form and model-authored.
+    # For the built-in kinds the checking logic is ours and tested, so 0% really
+    # does mean the repo contradicts the rule — "pointer members end in Ptr"
+    # measured 0% against 20 `m_`-prefixed members, and that guess was simply wrong.
+    if (
+        kind == "query"
+        and result.matches == 0
+        and result.total >= MIN_POPULATION_FOR_BROKEN_CHECK
+    ):
+        return (
+            f"대상 {result.total}개를 찾았는데 만족하는 것이 0개 "
+            f"— 규칙이 틀렸다기보다 질의가 조건을 잘못 표현한 것으로 보입니다"
+        )
     if result.coverage < MIN_RULE_CONSISTENCY:
         return (
             f"측정 coverage {result.coverage:.0%} ({result.matches}/{result.total}) "
@@ -352,6 +436,12 @@ def verify_inferred(
         desc = r.rule.strip()
         if not desc:
             continue
+        report.kinds[r.check.kind] += 1
+        if r.check.kind == "query":
+            for q in (r.check.population_query, r.check.conforming_query):
+                if q.strip() and cpp_query.compile_query(q) is None:
+                    report.bad_queries.append(q.strip()[:120])
+
         result = verify(repo, r.check, include, exclude, include_tests)
 
         if result is None:
@@ -360,7 +450,7 @@ def verify_inferred(
             continue
 
         if result.coverage < MIN_RULE_CONSISTENCY or result.matches < MIN_RULE_OCCURRENCES:
-            report.rejected.append((desc, _rejection_reason(result)))
+            report.rejected.append((desc, _rejection_reason(result, r.check.kind)))
             continue
 
         # Verified. A naming rule becomes a real facet rule the deterministic

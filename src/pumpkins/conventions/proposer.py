@@ -64,6 +64,7 @@ from pumpkins.conventions.extractor import select_files
 from pumpkins.conventions.learner import ConventionRule, RuleCheck
 from pumpkins.conventions.scope import RuleScope
 from pumpkins.conventions.survey import render as render_survey, survey_repo
+from pumpkins.languages.cpp import ast as cpp_ast, query as cpp_query
 from pumpkins.llm.provider import get_client
 
 log = logging.getLogger(__name__)
@@ -88,6 +89,15 @@ generic linter already enforces. Look BEYOND naming — also structural / API
 shape / ownership (raw vs smart pointers) / const-correctness / error handling /
 file layout — but include naming too when it is clearly consistent.
 
+You are given the files in FULL, so look deliberately at what a structural
+summary cannot show and what naming statistics cannot express:
+  - modifiers: const, override, static, explicit, noexcept, final
+  - where declarations live: namespace placement, declaration order, access blocks
+  - how functions begin and end: argument validation, error signalling
+These are ordinary, common C++ conventions and they are invisible to every other
+part of this tool, so they are the most valuable thing you can find. None of them
+fits a shortcut kind — they need `query`.
+
 For each convention you infer:
 - rule: ONE sentence, in Korean, phrased so it can directly back a review
   comment (e.g. "헤더는 include 가드 대신 `#pragma once`를 쓴다").
@@ -95,7 +105,40 @@ For each convention you infer:
   error-handling | layout | other
 - evidence: the concrete thing in the code that made you say it (names, files).
 - check: a STRUCTURED, machine-runnable check we use to VERIFY your guess
-  against the whole repo. Fill it ONLY when the rule truly reduces to one of:
+  against the whole repo. A rule with no check can never be measured, and a rule
+  that is never measured is never enforced — so ALWAYS try to fill it.
+
+  `query` is the general kind and your DEFAULT choice; it can express almost any
+  convention about code shape. The other kinds below are shortcuts for a handful
+  of common cases — use one only when it fits your rule exactly, and reach for
+  `query` otherwise. Do not weaken a rule to make it fit a shortcut.
+
+  The kinds:
+    * query — THE GENERAL KIND. Prefer it unless a shortcut fits exactly. Two
+      tree-sitter queries over the C++ grammar:
+        {kind: "query",
+         population_query: the sites the rule is ABOUT (the denominator),
+         conforming_query: the sites that SATISFY it (the numerator)}
+      Both MUST capture the node being judged as @subject, and it must be the
+      SAME node in both, or the two cannot be matched up.
+      Get the DENOMINATOR right: population is every site the rule governs,
+      including the violating ones. "인자 없는 메서드는 const" has a population of
+      all no-argument methods, not just the const ones.
+      Available node names are listed at the end of the user message;
+      anonymous nodes must be quoted.
+      Worked examples, both verified to run:
+        "인자 없는 메서드는 const 를 붙인다" →
+          population: (field_declaration (function_declarator
+                        declarator: (field_identifier) @subject (parameter_list)))
+          conforming: (field_declaration (function_declarator
+                        declarator: (field_identifier) @subject (type_qualifier)))
+        "virtual 메서드에는 override 를 쓴다" →
+          population: (field_declaration "virtual" (function_declarator
+                        declarator: (field_identifier) @subject))
+          conforming: (field_declaration (function_declarator
+                        declarator: (field_identifier) @subject (virtual_specifier)))
+      You may narrow by text with #match?/#eq?, e.g.
+        (class_specifier name: (type_identifier) @subject (#match? @subject "Exception$"))
     * naming — {kind: "naming", category: member|function|class_type|constant,
       facet: prefix|suffix|casing, value: the EXACT string or casing style}.
       Allowed casing values: lowerCamel, lower_snake, UpperCamel, UPPER_SNAKE.
@@ -119,7 +162,10 @@ For each convention you infer:
       value: "smart" | "raw"}: of the class members that hold a pointer,
       value="smart" means they are held by smart pointers (unique_ptr/shared_ptr)
       rather than raw `T*`. Members held by value are not counted either way.
-  Otherwise set {kind: "none"}. A wrong check gets the rule REJECTED when its
+  Set {kind: "none"} only when the rule genuinely cannot be checked mechanically
+  at all (it needs understanding intent, not shape). Prefer `query` over `none`:
+  a rule with no check cannot be measured, so it can never be enforced.
+  A wrong check gets the rule REJECTED when its
   measured coverage is low, so only fill it when the rule genuinely reduces to
   that check across ALL of the category (not a subset you cannot express).
   Worked examples — make the check match the rule EXACTLY:
@@ -342,6 +388,20 @@ class RuleInferrer:
             log.debug("  lead: %s — %s %s", lead.area, lead.suspicion, lead.files)
         return leads, parsed.input_tokens, parsed.output_tokens, text
 
+    def _vocabulary(self, picked: list[Path] | None, repo: Path) -> str:
+        """Grammar node names present in the code the model is about to read."""
+        from pumpkins.conventions.extractor import collect_macros, select_files
+
+        files = picked if picked else select_files(repo)[:40]
+        macros = collect_macros(repo, files)
+        trees = []
+        for path in files:
+            try:
+                trees.append(cpp_ast.parse_tree(path.read_text(encoding="utf-8", errors="replace"), macros))
+            except OSError:
+                continue
+        return cpp_query.node_vocabulary(trees)
+
     def infer(
         self,
         repo: Path,
@@ -394,7 +454,7 @@ class RuleInferrer:
             model=self.model,
             max_tokens=2000,
             system=_INFER_SYSTEM,
-            user=_infer_prompt(code, leads, survey_text),
+            user=_infer_prompt(code, leads, survey_text, self._vocabulary(picked, repo)),
             temperature=LEARN_TEMPERATURE,
             schema=InferredRuleSet,
         )
@@ -417,7 +477,12 @@ class RuleInferrer:
         )
 
 
-def _infer_prompt(code: str, leads: list[InferenceLead], survey_text: str = "") -> str:
+def _infer_prompt(
+    code: str,
+    leads: list[InferenceLead],
+    survey_text: str = "",
+    vocabulary: str = "",
+) -> str:
     """The strong pass's user message: the structure map, the code, and the hunches.
 
     The map is included even though the cheap pass already read it, because some
@@ -451,6 +516,10 @@ def _infer_prompt(code: str, leads: list[InferenceLead], survey_text: str = "") 
                 f"conventions you see regardless of this list.\n\n{hints}"
             )
     parts.append(f"Repository C++ source (a sample — the flagged files):\n\n{code}")
+    if vocabulary:
+        # Query authoring fails mostly on guessed node names, so the real ones go
+        # in. Cheap: ~370 tokens for a repo, against ~10k of source.
+        parts.append(vocabulary)
     return "\n\n".join(parts)
 
 

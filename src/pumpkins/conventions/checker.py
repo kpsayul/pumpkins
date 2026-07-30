@@ -36,7 +36,11 @@ from pumpkins.conventions.extractor import (
 )
 from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.store import load_active_rules
-from pumpkins.languages.cpp import ast as cpp_ast, parser as cpp_parser
+from pumpkins.languages.cpp import (
+    ast as cpp_ast,
+    parser as cpp_parser,
+    query as cpp_query,
+)
 from pumpkins.models import DetectorKind, DiffScope, Evidence, Finding, Severity
 
 log = logging.getLogger(__name__)
@@ -294,9 +298,17 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
             if _line_in_ranges(c.line, file_diff.added_ranges)
         ] if text else []
 
+        # A query check needs the parse tree itself, not extracted declarations.
+        tree = (
+            cpp_ast.parse_tree(text, macros)
+            if text and any(r.check.kind == "query" for r in in_scope)
+            else None
+        )
+
         for rule in in_scope:
             for subject, finding in _violations(
-                file_diff, rule, touched_fns, touched_members, touched_classes, layer_index
+                file_diff, rule, touched_fns, touched_members, touched_classes,
+                layer_index, tree,
             ):
                 key = (file_diff.path, rule.id, subject)
                 if key in seen:
@@ -325,7 +337,7 @@ def _repo_macros(repo: Path):
 _MACRO_CACHE: dict[Path, object] = {}
 
 
-def _violations(file_diff, rule, functions, members, classes, layer_index):
+def _violations(file_diff, rule, functions, members, classes, layer_index, tree=None):
     """Yield (subject, finding) for one rule against one changed file."""
     kind = rule.check.kind
     if kind == "return_type":
@@ -357,6 +369,25 @@ def _violations(file_diff, rule, functions, members, classes, layer_index):
                     file_diff.path, cls.line, cls.name,
                     f"`{cls.name}`가 상속하는 것은 `{derives}`", rule,
                 )
+    elif kind == "query":
+        # Sites the rule governs but that do not satisfy it — and only the ones
+        # the diff touched, so adopting a rule late does not indict old code.
+        if tree is None:
+            return
+        population = cpp_query.compile_query(rule.check.population_query)
+        conforming = cpp_query.compile_query(rule.check.conforming_query)
+        if population is None or conforming is None:
+            return
+        satisfied = conforming.subjects(tree)
+        for span, subject in population.subjects(tree).items():
+            if span in satisfied:
+                continue
+            if not _line_in_ranges(subject.line, file_diff.added_ranges):
+                continue
+            yield subject.text, _structural_finding(
+                file_diff.path, subject.line, subject.text,
+                f"`{subject.text}`", rule,
+            )
     elif kind == "include_direction":
         for line_no, target in _added_includes(file_diff):
             if layer_index.belongs_to(target, rule.check.forbidden_dir):

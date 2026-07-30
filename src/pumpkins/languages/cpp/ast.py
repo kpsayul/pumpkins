@@ -628,6 +628,15 @@ def _iter_declarations(node, access: str | None) -> Iterator[tuple[str, str]]:
         yield from _iter_declarations(child, access)
 
 
+def parse_tree(source: str, macros: MacroTable = NO_MACROS):
+    """The parse tree a caller can run queries against, or None without a parser.
+
+    Public because a query check needs the *same* tree the extractors see —
+    macros expanded, class headers recovered. Two different readings of one file
+    would let a rule measured at 100% fire on conforming code."""
+    return _parse(source, macros)
+
+
 def scan_with_report(
     source: str, macros: MacroTable = NO_MACROS
 ) -> tuple[list[tuple[str, str]], ParseReport | None]:
