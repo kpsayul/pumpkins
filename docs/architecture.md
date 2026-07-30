@@ -43,7 +43,7 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `conventions/checker.py` | 규칙을 diff와 결정적 대조 (명명=선언 매칭, 구조=계층/AST) | review |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
-| `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자·함수·멤버·클래스 추출, 매크로 class 헤더 복구, **파싱 건강상태 측정** (네이티브 dep, import-가드로 격리) | 공통 |
+| `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자·함수·멤버·클래스 추출, **매크로 펼치기**(리포의 `#define` 기반), **파싱 건강상태 측정** (네이티브 dep, import-가드로 격리) | 공통 |
 | `languages/cpp/parser.py` | 정규식 C++ 파서 — 리뷰 hunk 검사 + AST 폴백 | 공통 |
 | `languages/cpp/naming.py` | facet 어휘 — 이름을 prefix/suffix/casing로 분해 | 공통 |
 | `models.py` | 단계 간 데이터 계약 | 공통 |

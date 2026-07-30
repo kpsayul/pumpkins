@@ -237,7 +237,7 @@ def _verify_include_direction(repo: Path, check: RuleCheck, files: list[Path]) -
 
 
 def _verify_member_ownership(
-    check: RuleCheck, files: list[Path], macros: frozenset[str]
+    check: RuleCheck, files: list[Path], macros: cpp_ast.MacroTable
 ) -> CheckResult | None:
     """Ownership: of the members that hold a pointer, how many hold it the stated way.
 
@@ -267,7 +267,7 @@ def _verify_member_ownership(
 
 
 def _verify_base_class(
-    check: RuleCheck, files: list[Path], macros: frozenset[str]
+    check: RuleCheck, files: list[Path], macros: cpp_ast.MacroTable
 ) -> CheckResult | None:
     """Hierarchy: of the classes named like the rule says, how many derive as it says.
 

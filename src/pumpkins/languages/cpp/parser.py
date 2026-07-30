@@ -97,12 +97,29 @@ _STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"' + r"|'(?:\\.|[^'\\])*'")
 #
 # The lookahead excludes `(` *and* word characters: without the `\w`, the regex
 # happily backtracks and reads `#define MIN(a,b)` as defining `MI`.
-DEFINE_RE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)(?![\w(])")
+DEFINE_RE = re.compile(r"^\s*#\s*define\s+([A-Za-z_]\w*)(?![\w(])[ \t]*(.*)$")
 
 
-def object_like_macros(text: str) -> set[str]:
-    """Names this source `#define`s as object-like macros."""
-    return {m.group(1) for m in (DEFINE_RE.match(l) for l in text.splitlines()) if m}
+def object_like_macros(text: str) -> dict[str, str]:
+    """Object-like macros this source defines: name → replacement body.
+
+    Bodies are kept so a macro can be *expanded* rather than merely recognised —
+    `#define API __declspec(dllexport)` reads correctly once substituted, and an
+    empty body substitutes to nothing, which is the common export-macro case.
+
+    Two exclusions, both to protect line numbers and the surrounding line:
+      - a `\\`-continued define, whose body spans lines we did not read
+      - a trailing `//` comment, which would comment out the rest of a use site
+    """
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        m = DEFINE_RE.match(line)
+        if m is None or line.rstrip().endswith("\\"):
+            continue
+        body = m.group(2).split("//")[0].strip() if m.lastindex and m.lastindex >= 2 else ""
+        if "\n" not in body:
+            out.setdefault(m.group(1), body)
+    return out
 
 
 # `#include <a/b.h>` / `#include "a/b.h"` → the path between the brackets.

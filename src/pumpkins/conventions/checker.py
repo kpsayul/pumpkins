@@ -265,7 +265,7 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
     # mean a rule measured at 100% could still fire on conforming code.
     macros = _repo_macros(repo) if any(
         r.check.kind in DETERMINISTIC_STRUCTURAL_AST for r in structural
-    ) else frozenset()
+    ) else cpp_ast.NO_MACROS
 
     for file_diff in scope.files:
         in_scope = [r for r in structural if r.scope.applies_to(file_diff.path)]
@@ -308,7 +308,7 @@ def check_structural(scope: DiffScope, rules: list[ConventionRule], repo: Path) 
     return findings
 
 
-def _repo_macros(repo: Path) -> frozenset[str]:
+def _repo_macros(repo: Path):
     """Object-like macro names the repo defines. Cached per process.
 
     Collected lazily and only when an AST-backed structural rule is active, so a
@@ -322,7 +322,7 @@ def _repo_macros(repo: Path) -> frozenset[str]:
     return cached
 
 
-_MACRO_CACHE: dict[Path, frozenset[str]] = {}
+_MACRO_CACHE: dict[Path, object] = {}
 
 
 def _violations(file_diff, rule, functions, members, classes, layer_index):

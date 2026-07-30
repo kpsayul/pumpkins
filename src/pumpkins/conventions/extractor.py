@@ -147,7 +147,9 @@ def _read(path: Path) -> str | None:
 
 
 def _scan_file(
-    path: Path, macros: frozenset[str] = frozenset(), health: cpp_ast.ScanHealth | None = None
+    path: Path,
+    macros: cpp_ast.MacroTable = cpp_ast.NO_MACROS,
+    health: cpp_ast.ScanHealth | None = None,
 ) -> Iterator[tuple[str, str]]:
     """Yield (category, identifier) pairs from one file.
 
@@ -301,13 +303,14 @@ def extract_stats_with_health(
     return stats, health
 
 
-def collect_macros(repo: Path, files: list[Path] | None = None) -> frozenset[str]:
-    """Object-like macro names the repo defines, for resolving class headers."""
+def collect_macros(repo: Path, files: list[Path] | None = None) -> cpp_ast.MacroTable:
+    """The object-like macros the repo defines — the input that lets class
+    headers and macro-laden declarations parse without guessing."""
     if files is None:
         files = select_files(repo)
     texts = (t for t in (_read(p) for p in files) if t is not None)
     macros = cpp_ast.collect_macros(texts)
-    log.debug("collected %d object-like macro name(s) from the repo", len(macros))
+    log.debug("collected %d object-like macro(s) from the repo", len(macros))
     return macros
 
 

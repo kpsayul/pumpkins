@@ -20,7 +20,8 @@ requires_ts = pytest.mark.skipif(
     not cpp_ast.available(), reason="PUMPKINS_ALLOW_NO_TREE_SITTER=1 (명시적 건너뛰기)"
 )
 
-_MACROS = frozenset({"API"})
+# 리포가 `#define API` 를 선언했다는 뜻 (본문 없음 — 흔한 export 매크로 모양)
+_MACROS = cpp_ast.MacroTable({"API": ""})
 
 
 # ------------------------------------------------- 리포에 물어보기 (#define)
@@ -34,7 +35,10 @@ def test_only_object_like_macros_are_collected():
         "#define MIN(a,b) ((a)<(b)?(a):(b))\n"
     )
     got = cpp_parser.object_like_macros(text)
-    assert got == {"API", "BARE", "VERSION"}
+    assert set(got) == {"API", "BARE", "VERSION"}
+    # 이름만이 아니라 본문도 필요하다 — 걷어내는 대신 펼치기 때문
+    assert got["API"] == "__declspec(dllexport)"
+    assert got["BARE"] == "" and got["VERSION"] == "3"
     # `MIN(a,b)` 를 `MI` 로 잘라 읽던 정규식 backtracking 회귀 방지
     assert "MI" not in got and "MIN" not in got
 
@@ -43,6 +47,53 @@ def test_macros_are_collected_from_the_repo(tmp_path):
     (tmp_path / "dll.h").write_text("#define MYLIB_API\n", encoding="utf-8")
     (tmp_path / "a.cpp").write_text("int f();\n", encoding="utf-8")
     assert "MYLIB_API" in collect_macros(tmp_path)
+
+
+# ------------------------------------------- 매크로 펼치기 (파일 전체에 적용)
+
+def test_expansion_leaves_preprocessor_lines_alone():
+    """헤더는 전부 `#ifndef GUARD` / `#define GUARD` 로 시작한다. 가드를 빈
+    문자열로 펼치면 `#ifndef` 만 남아 오류가 된다 — 실측으로 97개 중 49개
+    파일에서 없던 오류가 새로 생겼다."""
+    table = cpp_ast.MacroTable({"FOO_H": "", "API": ""})
+    src = "#ifndef FOO_H\n#define FOO_H\nclass API Foo {};\n#endif\n"
+    out = src if not cpp_ast.available() else table.expand(src)
+    assert "#ifndef FOO_H" in out and "#define FOO_H" in out
+    assert "class  Foo {};" in out          # 코드 줄에서는 펼쳐졌다
+
+
+def test_expansion_preserves_line_count():
+    """줄 번호가 밀리면 구조 지적이 엉뚱한 코드를 가리킨다."""
+    table = cpp_ast.MacroTable({"A": "__declspec(dllexport)", "B": ""})
+    src = "A int x;\nB int y;\n\nA B int z;\n"
+    assert table.expand(src).count("\n") == src.count("\n")
+
+
+def test_a_macro_body_naming_another_macro_is_expanded():
+    """`#define A  B C` — 한 번만 치환하면 B 가 남는다."""
+    table = cpp_ast.MacroTable({"OUTER": "INNER", "INNER": ""})
+    assert table.expand("OUTER int x;\n").strip() == "int x;"
+
+
+def test_a_trailing_comment_is_not_pasted_into_the_use_site():
+    """`#define X 1  // 설명` 의 본문에 주석을 넣으면 사용처의 뒷부분이
+    전부 주석 처리된다."""
+    got = cpp_parser.object_like_macros("#define X 1  // 왜 1인지\n")
+    assert got["X"] == "1"
+
+
+@requires_ts
+def test_expanding_the_whole_file_beats_fixing_only_class_headers():
+    """실측(yaml-cpp): 파일 전체 치환으로 파싱 오류 235 → 76, 그리고 통계에서
+    쓰레기가 빠졌다 — `function 'string FpToString'` → `'FpToString'`,
+    `public_field 'override'` ×14 → 사라짐.
+
+    반환 타입이 이름에 붙어 들어오는 건 class 헤더만 고쳐서는 못 잡는다."""
+    table = cpp_ast.MacroTable({"NOEX": "noexcept", "API": ""})
+    src = 'class API Wrapper {\n public:\n  std::string dump() NOEX;\n};\n'
+    names = {name for cat, name in cpp_ast.scan(src, table) if cat == "function"}
+    assert "dump" in names
+    assert not any(" " in n for n in names)   # `string dump` 같은 게 없어야 한다
 
 
 # --------------------------------------------- 세 가지 모양, 각각 다르게 실패
@@ -103,7 +154,7 @@ def test_recovery_never_makes_a_parse_worse():
         "class Foo bar;",
         ")))garbage((( class",
     ]:
-        plain = cpp_ast._error_count(cpp_ast._parse(src, frozenset()).root_node)
+        plain = cpp_ast._error_count(cpp_ast._parse(src, cpp_ast.NO_MACROS).root_node)
         with_macros = cpp_ast._error_count(cpp_ast._parse(src, _MACROS).root_node)
         assert with_macros <= plain, src
 
@@ -114,10 +165,10 @@ def test_recovery_never_makes_a_parse_worse():
 def test_unresolved_headers_are_counted_not_swallowed():
     """판정 못 한 자리는 0건이 아니라 '모르겠다 N건'으로 남아야 한다."""
     src = "class UNKNOWN_MACRO Foo;\n"
-    _, report = cpp_ast.scan_with_report(src, frozenset())
+    _, report = cpp_ast.scan_with_report(src, cpp_ast.NO_MACROS)
     assert report.unresolved == 1 and not report.clean
     # 매크로라고 알려주면 판정된다
-    _, report2 = cpp_ast.scan_with_report(src, frozenset({"UNKNOWN_MACRO"}))
+    _, report2 = cpp_ast.scan_with_report(src, cpp_ast.MacroTable({"UNKNOWN_MACRO": ""}))
     assert report2.unresolved == 0
 
 
