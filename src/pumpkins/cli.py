@@ -276,6 +276,15 @@ def build_learn_parser() -> argparse.ArgumentParser:
         f"only those files",
     )
     p.add_argument(
+        "--infer-all",
+        action="store_true",
+        help="with --infer, read the ENTIRE repo in chunks instead of sampling a "
+        "few files. Nothing decides in advance which conventions matter, so this "
+        "is the only mode with no built-in prior — but it sends ALL of your source "
+        f"to the provider. The cheap model ({default_learn_model()}) does the "
+        "reading; the run prints how many files, tokens and dollars before sending",
+    )
+    p.add_argument(
         "--no-triage",
         action="store_true",
         help="with --infer, skip the cheap first pass and hand the strong model "
@@ -393,6 +402,28 @@ def _format_parse_health(health, root) -> str:
     return "\n".join(lines)
 
 
+def _format_full_read(outcome) -> str:
+    """What a whole-repo read actually covered, and what it cost.
+
+    Printed because "we read everything" is a claim, and a claim the user cannot
+    check is worth nothing — the same reason coverage gaps are listed in a review
+    report instead of being rounded up to a green check.
+    """
+    est = outcome.estimate
+    lines = [
+        "",
+        f"전체 읽기: {outcome.files_read}개 파일을 {outcome.chunks_read}묶음으로 "
+        f"나눠 전부 읽었습니다 ({outcome.chars_read:,}자)",
+    ]
+    if est is not None:
+        lines.append(f"  보낸 곳: {est.provider} / {est.model}")
+    lines.append(
+        f"  토큰 {outcome.total_tokens:,} · 관찰 {len(outcome.rules)}건 "
+        f"→ 아래에서 리포 전체에 대조합니다"
+    )
+    return "\n".join(lines)
+
+
 def _format_triage(outcome) -> str:
     """What the cheap first pass looked at and where it sent the expensive one.
 
@@ -412,7 +443,7 @@ def _format_triage(outcome) -> str:
     return "\n".join(lines)
 
 
-def _format_inference(report) -> str:
+def _format_inference(report, repair=None) -> str:
     """AI-inferred rules after measuring each against the repo.
 
     Three buckets: verified (coverage passed the gate — a naming rule now
@@ -449,6 +480,13 @@ def _format_inference(report) -> str:
         for rule in report.unverified:
             lines.append(f"    ~ {rule.description}")
     lines.append(f"  검사 종류: {report.kind_summary()}")
+    if repair is not None and repair.attempted:
+        # Say what the first draft cost and what the retry recovered. A silent
+        # retry would hide how often the model gets a check right first time.
+        lines.append(
+            f"  검사 고쳐쓰기: 안 돌아간 것 {repair.attempted}건 중 "
+            f"{repair.repaired}건 복구, {repair.still_broken}건은 여전히 측정 불가"
+        )
     if report.bad_queries:
         # The query kind's whole value is that the model is no longer limited to a
         # fixed list. If its queries do not compile, that value is not being
@@ -554,9 +592,20 @@ def run_learn(argv: list[str]) -> int:
         proposed = list(result.rules)
         report = None
         outcome = None
+        repair = None
         if args.infer:
-            outcome = RuleInferrer(triage=not args.no_triage).infer(
+            inferrer = RuleInferrer(triage=not args.no_triage)
+            # Reading everything is the only mode where no step of ours decides
+            # what kind of convention is worth looking for.
+            read = inferrer.infer_all if args.infer_all else inferrer.infer
+            outcome = read(
                 args.repo, args.include, args.exclude, args.include_tests
+            )
+            # A check that does not compile loses an observation the model may
+            # have got right. Hand the failures back once, with the reason.
+            repair = inferrer.repair_checks(
+                args.repo, outcome.rules,
+                args.include, args.exclude, args.include_tests,
             )
             report = verify_inferred(
                 args.repo, outcome.rules, scan_scope,
@@ -580,10 +629,12 @@ def run_learn(argv: list[str]) -> int:
         print(_format_reconciliation(root, rec, written, args.accept_all))
         if health.needs_attention:
             print(_format_parse_health(health, root))
-        if outcome is not None and outcome.triaged:
+        if outcome is not None and outcome.chunks_read:
+            print(_format_full_read(outcome))
+        elif outcome is not None and outcome.triaged:
             print(_format_triage(outcome))
         if report is not None:
-            print(_format_inference(report))
+            print(_format_inference(report, repair))
         if result.split_hypotheses:
             print(_format_split_hypotheses(result.split_hypotheses, root))
     except Exception as exc:  # surface a clean error instead of a traceback wall

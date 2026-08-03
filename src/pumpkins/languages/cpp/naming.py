@@ -25,6 +25,16 @@ AMBIGUOUS_CASING = "single_lower"
 
 _CASING_COMPATIBLE = {AMBIGUOUS_CASING: frozenset({"lowerCamel", "lower_snake"})}
 
+# The closed vocabulary `_classify_casing` can produce. A rule asking for a
+# casing outside it can never match anything, so comparing against it silently
+# yields 0% — and 0% is then reported as "the repo does not follow this rule".
+# Measured: a model wrote "UpperCamelCase" instead of "UpperCamel" and a rule
+# that yaml-cpp follows for all 347 of its classes was rejected at 0/347.
+# An unrecognised value means the check cannot run, not that the rule is false.
+KNOWN_CASINGS = frozenset(
+    {"lowerCamel", "lower_snake", "UpperCamel", "UPPER_SNAKE", AMBIGUOUS_CASING, "other"}
+)
+
 
 def casing_matches(observed: str, expected: str) -> bool:
     """Whether an identifier's observed casing satisfies a rule's expected one."""

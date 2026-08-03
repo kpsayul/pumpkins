@@ -59,6 +59,7 @@ from pumpkins.conventions.proposer import (
 from pumpkins.conventions.scope import RuleScope
 from pumpkins.languages.cpp import (
     ast as cpp_ast,
+    naming,
     parser as cpp_parser,
     query as cpp_query,
 )
@@ -122,6 +123,12 @@ def verify(
 
     if check.kind == "naming":
         if check.facet not in ("prefix", "suffix", "casing") or not check.value:
+            return None
+        if check.facet == "casing" and check.value not in naming.KNOWN_CASINGS:
+            # Not a casing this scanner can ever report, so every comparison
+            # would fail and the rule would be rejected at 0% — blaming the repo
+            # for a value we do not recognise. Unmeasurable is the honest answer.
+            log.debug("unknown casing value %r — cannot measure", check.value)
             return None
         matches = total = 0
         for path in files:

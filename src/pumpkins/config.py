@@ -41,6 +41,18 @@ PROVIDER_MODELS = {
     "openai": {"review": "gpt-4o", "learn": "gpt-4o-mini"},
 }
 
+# Input-token prices, USD per million. Approximate and they go stale — used ONLY
+# to warn about scale before sending a whole repo to a provider, so what matters
+# is telling $0.02 apart from $20, not being exact. A wrong-but-close number is
+# more useful here than no number: the point is that the user can decide.
+INPUT_PRICE_PER_MTOK = {
+    "gpt-4o-mini": 0.15,
+    "gpt-4o": 2.50,
+    "gpt-4.1": 2.00,
+    "claude-sonnet-5": 3.00,
+    "claude-opus-4-8": 15.00,
+}
+
 PROVIDER_KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",

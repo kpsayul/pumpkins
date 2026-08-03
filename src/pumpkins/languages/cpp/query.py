@@ -183,6 +183,31 @@ def node_vocabulary(trees, limit: int = 45) -> str:
     )
 
 
+def syntax_error(source: str) -> str | None:
+    """Why this query will not compile, or None if it will.
+
+    The message is kept verbatim because it is unusually good feedback —
+    `Invalid node type at row 0, column 41: virtual` names the exact token and
+    the exact mistake (an anonymous node written as if it were named). Handing
+    that back to the model is far more likely to produce a fix than "your query
+    was wrong", which is all a boolean could say.
+    """
+    if _LANGUAGE is None:
+        return "tree-sitter unavailable"
+    if not source.strip():
+        return "empty query"
+    if SUBJECT not in source:
+        return f"query has no @{SUBJECT} capture, so there is nothing to count"
+    try:
+        try:
+            Query(_LANGUAGE, source)
+        except (TypeError, AttributeError):
+            _LANGUAGE.query(source)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
 def compile_query(source: str) -> CompiledQuery | None:
     """Compile a query, or None when it is unusable.
 
