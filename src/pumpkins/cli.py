@@ -311,6 +311,14 @@ def build_learn_parser() -> argparse.ArgumentParser:
         "vendored code the built-in skip list misses",
     )
     p.add_argument(
+        "--include-vendored",
+        action="store_true",
+        help="also learn from code the repo did not write. Vendored files are "
+        "excluded by default and the reason is logged — a bundled library's "
+        "conventions are not this project's (measured: 157 of one repo's 158 "
+        "constants came from a single vendored header)",
+    )
+    p.add_argument(
         "--include-tests",
         action="store_true",
         help=f"also scan test directories ({', '.join(sorted(LEARN_TEST_DIRS))}), "
@@ -546,11 +554,16 @@ def run_learn(argv: list[str]) -> int:
     )
 
     try:
+        skip_vendored = not args.include_vendored
         scanned = len(
-            select_files(args.repo, args.include, args.exclude, args.include_tests)
+            select_files(
+                args.repo, args.include, args.exclude, args.include_tests,
+                skip_vendored=skip_vendored,
+            )
         )
         stats, health = extract_stats_with_health(
-            args.repo, args.include, args.exclude, args.include_tests
+            args.repo, args.include, args.exclude, args.include_tests,
+            skip_vendored=skip_vendored,
         )
         if sum(s.total for s in stats) == 0:
             log.error("no C++ identifiers found under %s — nothing to learn", args.repo)

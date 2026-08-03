@@ -42,6 +42,7 @@ pumpkins는 C++ 코드 리뷰 도우미다. **규칙을 만드는 `learn`** 과 
 | `conventions/proposer.py` | 틀 없이 코드에서 규칙 추측 — 훑기→정독, 또는 **전부 읽기**(묶음 분할·규모 고지) | learn |
 | `conventions/verifier.py` | 추측을 리포에 대조·채점 | learn |
 | `conventions/checker.py` | 규칙을 diff와 결정적 대조 (명명=선언 매칭, 구조=계층/AST) | review |
+| `conventions/vendored.py` | **남의 코드 판별** — 서브모듈·저작권자·커밋당 바이트 (이름 목록 대신 리포에 물어봄) | learn |
 | `conventions/scope.py` | 규칙·스캔의 적용 범위(경로/확장자) | 공통 |
 | `conventions/store.py` | 규칙 저장소 상태·병합·기록 | learn |
 | `languages/cpp/ast.py` | C++ AST(tree-sitter) — 식별자·함수·멤버·클래스 추출, **매크로 펼치기**(리포의 `#define` 기반), **파싱 건강상태 측정** (네이티브 dep, import-가드로 격리) | 공통 |

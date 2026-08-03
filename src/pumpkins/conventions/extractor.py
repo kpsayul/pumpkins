@@ -29,6 +29,7 @@ from pumpkins.config import (
     PARSE_HEALTH_WARN_RATIO,
 )
 from pumpkins.conventions.scope import normalize_path, path_matches
+from pumpkins.conventions import vendored
 from pumpkins.languages import cpp_extensions
 from pumpkins.languages.cpp import ast as cpp_ast, naming, parser as cpp_parser
 
@@ -178,6 +179,7 @@ def select_files(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     include_tests: bool = False,
+    skip_vendored: bool = True,
 ) -> list[Path]:
     """The C++ files a learn scan will read, after directory and glob scoping.
 
@@ -199,7 +201,34 @@ def select_files(
         if include and not path_matches(rel_posix, include):
             continue
         files.append(p)
+
+    if skip_vendored and files:
+        files = _drop_vendored(repo, files)
     return files
+
+
+def _drop_vendored(repo: Path, files: list[Path]) -> list[Path]:
+    """Remove somebody else's code, and say which and why.
+
+    The directory-name list above catches `third_party/` and misses everything
+    named anything else — it missed fmt's `test/gtest/` and yaml-cpp's
+    `src/contrib/dragonbox.h`, and the latter held 157 of that repo's 158
+    "constants". Asking the repo (vendored.py) finds it without a longer list.
+
+    Reported, never silent: this is a judgement about someone's code and they
+    have to be able to overrule it with --include-vendored.
+    """
+    findings = vendored.detect(repo, files)
+    if not findings:
+        return files
+    excluded = {repo / f.path for f in findings}
+    log.info(
+        "외부 코드로 판단해 %d개 파일을 스캔에서 제외했습니다 "
+        "(--include-vendored 로 포함):", len(findings),
+    )
+    for finding in findings[:8]:
+        log.info("  %s", finding.describe())
+    return [p for p in files if p not in excluded]
 
 
 def extract_stats(
@@ -207,9 +236,12 @@ def extract_stats(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     include_tests: bool = False,
+    skip_vendored: bool = True,
 ) -> list[CategoryStats]:
     """Scan a repo and build per-category naming statistics."""
-    return extract_stats_with_health(repo, include, exclude, include_tests)[0]
+    return extract_stats_with_health(
+        repo, include, exclude, include_tests, skip_vendored
+    )[0]
 
 
 def extract_stats_with_health(
@@ -217,6 +249,7 @@ def extract_stats_with_health(
     include: list[str] | None = None,
     exclude: list[str] | None = None,
     include_tests: bool = False,
+    skip_vendored: bool = True,
 ) -> tuple[list[CategoryStats], cpp_ast.ScanHealth]:
     """`extract_stats`, plus how well the repo parsed.
 
@@ -234,7 +267,7 @@ def extract_stats_with_health(
     ambiguous: Counter = Counter()  # names with no casing signal, per category
     per_dir: Counter = Counter()    # identifiers per directory, for the scan log
 
-    files = select_files(repo, include, exclude, include_tests)
+    files = select_files(repo, include, exclude, include_tests, skip_vendored)
     if len(files) > MAX_FILES:
         log.warning("repo has %d C++ files — scanning first %d", len(files), MAX_FILES)
         files = files[:MAX_FILES]
