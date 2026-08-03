@@ -16,24 +16,20 @@ from __future__ import annotations
 
 import re
 
+from pumpkins.languages.cpp import vocabulary
+
 # A single lowercase word (`dump`, `value`, `data_`) satisfies lowerCamel and
 # lower_snake equally — no word boundary reveals which the project follows.
 # Counting it as its own style splits one real convention across buckets and
 # hides it from the threshold gate, so it is excluded from casing statistics and
 # never counts as a casing violation on the review side.
-AMBIGUOUS_CASING = "single_lower"
+AMBIGUOUS_CASING = vocabulary.AMBIGUOUS_CASING
 
 _CASING_COMPATIBLE = {AMBIGUOUS_CASING: frozenset({"lowerCamel", "lower_snake"})}
 
-# The closed vocabulary `_classify_casing` can produce. A rule asking for a
-# casing outside it can never match anything, so comparing against it silently
-# yields 0% — and 0% is then reported as "the repo does not follow this rule".
-# Measured: a model wrote "UpperCamelCase" instead of "UpperCamel" and a rule
-# that yaml-cpp follows for all 347 of its classes was rejected at 0/347.
-# An unrecognised value means the check cannot run, not that the rule is false.
-KNOWN_CASINGS = frozenset(
-    {"lowerCamel", "lower_snake", "UpperCamel", "UPPER_SNAKE", AMBIGUOUS_CASING, "other"}
-)
+# 어휘는 vocabulary.py 한 곳에서만 선언한다 — 네 파일에 흩어져 있다가
+# 두 곳이 각자 별칭 표를 기르기 시작한 것이 이 모듈을 만든 이유다.
+KNOWN_CASINGS = frozenset(vocabulary.OBSERVED_CASINGS)
 
 
 def casing_matches(observed: str, expected: str) -> bool:

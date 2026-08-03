@@ -204,3 +204,61 @@ def test_the_casing_vocabulary_matches_what_the_scanner_produces():
         for name in ("maxCount", "max_count", "MaxCount", "MAX_COUNT", "flush", "X9_a")
     }
     assert produced <= KNOWN_CASINGS
+
+
+# ------------------------------- 닫힌 어휘는 프롬프트가 아니라 스키마가 지킨다
+
+def test_closed_vocabularies_are_enforced_by_the_schema():
+    """프롬프트는 부탁이고 스키마는 계약이다. `kind`·`facet` 은 처음부터 Literal
+    이었고 한 번도 틀린 값이 온 적이 없다. 자유 문자열이던 둘에서만 사고가 났다."""
+    schema = RuleCheck.model_json_schema()
+
+    def is_enum(field: str) -> bool:
+        import json
+        return "enum" in json.dumps(schema["properties"][field])
+
+    for field in ("kind", "facet", "category", "casing", "ownership"):
+        assert is_enum(field), f"{field} 가 자유 문자열이면 모델이 아무 값이나 낼 수 있다"
+
+
+def test_one_declaration_feeds_both_the_type_and_the_set():
+    """타입과 런타임 집합이 같은 선언에서 나와야 어긋날 수가 없다."""
+    from typing import get_args
+    from pumpkins.languages.cpp import vocabulary as v
+
+    assert set(get_args(v.RuleCasing)) == set(v.RULE_CASINGS)
+    assert set(get_args(v.IdentifierCategory)) == set(v.CATEGORIES)
+    assert set(get_args(v.OwnershipKind)) == set(v.OWNERSHIP_KINDS)
+    # 규칙이 쓸 수 있는 카테고리는 전부 무언가를 덮어야 한다 (덮는 게 없으면 죽은 값)
+    for category in get_args(v.RuleCategory):
+        assert v.CATEGORY_SPANS.get(category), f"{category} 가 아무것도 덮지 않는다"
+    # 스캐너가 뱉는 카테고리는 전부 어떤 규칙 카테고리엔가 덮여야 한다
+    covered = {c for spans in v.CATEGORY_SPANS.values() for c in spans}
+    assert set(v.CATEGORIES) <= covered
+
+
+def test_the_verifier_and_the_checker_agree_on_what_a_category_covers():
+    """전에는 두 파일이 각자 별칭 표를 들고 있었다 — 그러면 언젠가 어긋난다."""
+    from pumpkins.conventions import checker, verifier
+
+    for rule_cat in ("member", "member_variable", "private_member", "function"):
+        for observed in ("private_member", "public_field", "function", "class_type"):
+            assert (
+                checker._category_matches(rule_cat, observed)
+                == verifier._category_matches(rule_cat, observed)
+            ), f"{rule_cat} vs {observed} 에서 두 쪽 판단이 다르다"
+
+
+@requires_ts
+def test_a_casing_rule_stored_before_the_enum_field_still_runs(tmp_path):
+    """이미 승인해 커밋한 규칙이 필드가 늘었다고 조용히 죽으면 안 된다."""
+    from pumpkins.conventions import verify
+
+    (tmp_path / "a.h").write_text(
+        "\n".join(f"class GoodName{i} {{}};" for i in range(30)), encoding="utf-8"
+    )
+    legacy = RuleCheck(kind="naming", category="class_type", facet="casing",
+                       value="UpperCamel")          # 옛 형식: value 에 casing
+    modern = RuleCheck(kind="naming", category="class_type", facet="casing",
+                       casing="UpperCamel")         # 새 형식: 전용 칸
+    assert verify(tmp_path, legacy).coverage == verify(tmp_path, modern).coverage == 1.0

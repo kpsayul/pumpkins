@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Iterator
 
-from pumpkins.languages.cpp import parser as cpp_parser
+from pumpkins.languages.cpp import parser as cpp_parser, vocabulary
 
 log = logging.getLogger(__name__)
 
@@ -531,7 +531,7 @@ def _return_type(node, func_declarator) -> str:
 
 # Same categories the regex scanner (cpp_parser.scan) yields, so the naming
 # extractor can swap parsers without changing its statistics contract.
-_CATEGORIES = ("private_member", "public_field", "constant", "function", "class_type")
+_CATEGORIES = vocabulary.CATEGORIES
 
 
 def _norm_access(text: str) -> str:

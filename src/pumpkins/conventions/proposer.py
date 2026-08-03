@@ -141,10 +141,9 @@ For each convention you infer:
                         declarator: (field_identifier) @subject (virtual_specifier)))
       You may narrow by text with #match?/#eq?, e.g.
         (class_specifier name: (type_identifier) @subject (#match? @subject "Exception$"))
-    * naming — {kind: "naming", category: member|function|class_type|constant,
-      facet: prefix|suffix|casing, value: the EXACT string or casing style}.
-      Allowed casing values: lowerCamel, lower_snake, UpperCamel, UPPER_SNAKE.
-      value for prefix/suffix is the literal affix, e.g. "m_", "_", "Impl".
+    * naming — {kind: "naming", category: …, facet: prefix|suffix|casing, …}.
+      For prefix/suffix put the literal affix in `value` ("m_", "_", "Impl").
+      For casing put the style in `casing`, NOT in `value`.
     * header_directive — {kind: "header_directive", text: the exact first line,
       e.g. "#pragma once"}.
     * return_type (structural) — {kind: "return_type", name_prefix: e.g.
@@ -161,9 +160,9 @@ For each convention you infer:
       ENDS WITH name_suffix derive from a base whose name contains base_contains.
       Use for "all X derive from Y" conventions.
     * member_ownership (structural, OWNERSHIP) — {kind: "member_ownership",
-      value: "smart" | "raw"}: of the class members that hold a pointer,
-      value="smart" means they are held by smart pointers (unique_ptr/shared_ptr)
-      rather than raw `T*`. Members held by value are not counted either way.
+      ownership: "smart" | "raw"}: of the class members that hold a pointer,
+      "smart" means they are held by unique_ptr/shared_ptr rather than raw `T*`.
+      Members held by value are not counted either way.
   Set {kind: "none"} only when the rule genuinely cannot be checked mechanically
   at all (it needs understanding intent, not shape). Prefer `query` over `none`:
   a rule with no check cannot be measured, so it can never be enforced.
@@ -175,13 +174,13 @@ For each convention you infer:
        facet: prefix, value: "m_"}   (value is the literal affix WITH the
        underscore — "m_", never "m")
     "함수 이름은 lowerCamel" → {kind: naming, category: function,
-       facet: casing, value: "lowerCamel"}
+       facet: casing, casing: "lowerCamel"}
     "헤더는 #pragma once로 시작한다" → {kind: header_directive,
        text: "#pragma once"}
     "core 계층은 ui 계층에 의존하지 않는다" → {kind: include_direction,
        from_dir: "src/core", forbidden_dir: "src/ui"}
     "소유하는 멤버 포인터는 스마트 포인터로 잡는다" → {kind: member_ownership,
-       value: "smart"}
+       ownership: "smart"}
     "예외 클래스는 std::runtime_error를 상속한다" → {kind: base_class,
        name_suffix: "Exception", base_contains: "runtime_error"}
 

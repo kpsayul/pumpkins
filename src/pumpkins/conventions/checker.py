@@ -38,6 +38,7 @@ from pumpkins.conventions.learner import ConventionRule
 from pumpkins.conventions.store import load_active_rules
 from pumpkins.languages.cpp import (
     ast as cpp_ast,
+    vocabulary,
     parser as cpp_parser,
     query as cpp_query,
 )
@@ -52,17 +53,10 @@ _MEMBER_CONTEXT_RE = re.compile(
     r"^\s*(?:public|private|protected)\s*:|\b(?:class|struct)\s+[A-Za-z_]"
 )
 
-# A rule written before members were split by visibility still has to work: the
-# generic category matches either side. The reverse is deliberately not true —
-# a `private_member` rule never applies to a member whose visibility we could
-# not see, because guessing is how false positives get made.
-_CATEGORY_ALIASES = {"member_variable": ("private_member", "public_field")}
-
-
 def _category_matches(rule_category: str, observed: str) -> bool:
-    return observed == rule_category or observed in _CATEGORY_ALIASES.get(
-        rule_category, ()
-    )
+    """카테고리가 무엇을 덮는지는 vocabulary.CATEGORY_SPANS 한 곳에서 온다 —
+    검사기와 검증기가 각자 별칭 표를 들고 있다가 어긋난 적이 있다."""
+    return vocabulary.category_covers(rule_category, observed)
 
 
 def _opening_access(hunk) -> str | None:
@@ -348,7 +342,7 @@ def _violations(file_diff, rule, functions, members, classes, layer_index, tree=
                     f"`{fn.name}`의 반환 타입 `{fn.return_type}`", rule,
                 )
     elif kind == "member_ownership":
-        want_smart = (rule.check.value or "smart").lower() == "smart"
+        want_smart = rule.check.ownership_target() == "smart"
         for member in members:
             if not member.holds_pointer:
                 continue

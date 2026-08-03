@@ -60,6 +60,7 @@ from pumpkins.conventions.scope import RuleScope
 from pumpkins.languages.cpp import (
     ast as cpp_ast,
     naming,
+    vocabulary,
     parser as cpp_parser,
     query as cpp_query,
 )
@@ -68,8 +69,6 @@ log = logging.getLogger(__name__)
 
 # Headers a header_directive check inspects (TUs don't carry include guards).
 _HEADER_EXTS = frozenset({".h", ".hpp", ".hh", ".hxx", ".inl"})
-# A naming check for "member" spans both visibilities (and the pre-split alias).
-_MEMBER_CATS = {"member", "member_variable", "private_member", "public_field"}
 
 
 @dataclass
@@ -83,9 +82,13 @@ class CheckResult:
 
 
 def _category_matches(want: str, observed: str) -> bool:
-    if want in _MEMBER_CATS:
-        return observed in {"private_member", "public_field", "member_variable"}
-    return want == observed
+    return vocabulary.category_covers(want, observed)
+
+
+def _naming_value(check: RuleCheck) -> str:
+    """The value a naming check compares against — the enum field when the model
+    filled it, the legacy free-text `value` for rules stored before it existed."""
+    return check.casing_target() if check.facet == "casing" else check.value
 
 
 def _naming_match(name: str, facet: str, value: str) -> bool:
@@ -122,13 +125,17 @@ def verify(
     files = select_files(repo, include, exclude, include_tests)
 
     if check.kind == "naming":
-        if check.facet not in ("prefix", "suffix", "casing") or not check.value:
+        # The value a naming check compares against depends on the facet: casing
+        # has its own enum field, prefix/suffix use the free-text one. Guarding
+        # on `value` alone made every rule using the enum field unmeasurable.
+        want = _naming_value(check)
+        if check.facet not in ("prefix", "suffix", "casing") or not want:
             return None
-        if check.facet == "casing" and check.value not in naming.KNOWN_CASINGS:
+        if check.facet == "casing" and want not in naming.KNOWN_CASINGS:
             # Not a casing this scanner can ever report, so every comparison
             # would fail and the rule would be rejected at 0% — blaming the repo
             # for a value we do not recognise. Unmeasurable is the honest answer.
-            log.debug("unknown casing value %r — cannot measure", check.value)
+            log.debug("unknown casing value %r — cannot measure", want)
             return None
         matches = total = 0
         for path in files:
@@ -139,7 +146,7 @@ def verify(
             for observed, name in cpp_parser.scan(text):
                 if _category_matches(check.category, observed):
                     total += 1
-                    matches += _naming_match(name, check.facet, check.value)
+                    matches += _naming_match(name, check.facet, want)
         return CheckResult(matches, total)
 
     if check.kind == "header_directive":
@@ -261,8 +268,8 @@ def _verify_member_ownership(
     pointers", which is a different question with a much smaller answer — the
     denominator mistake this project keeps having to avoid.
     """
-    want = check.value.strip().lower() or "smart"
-    if want not in ("smart", "raw"):
+    want = check.ownership_target()
+    if want not in vocabulary.OWNERSHIP_KINDS:
         return None
     if not cpp_ast.require("ownership rule verification"):
         return None
@@ -464,7 +471,9 @@ def verify_inferred(
         # checker enforces (reproducible at review); other kinds keep measured
         # coverage but stay facet=other until a review-side checker exists.
         if r.check.kind == "naming":
-            category = "member_variable" if r.check.category in _MEMBER_CATS else r.check.category
+            # 여러 visibility 를 덮는 규칙은 옛 총칭 이름으로 저장한다 (하위 호환)
+            spans = vocabulary.CATEGORY_SPANS.get(r.check.category, ())
+            category = "member_variable" if len(spans) > 1 else r.check.category
             rule_id = _inferred_id(f"{category}-{r.check.facet}-{r.check.value}", taken)
             facet, value = r.check.facet, r.check.value
             check = RuleCheck()  # naming uses facet/value; no separate check needed

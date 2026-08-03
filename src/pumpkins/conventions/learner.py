@@ -36,6 +36,7 @@ from pumpkins.config import (
 )
 from pumpkins.conventions.extractor import CategoryStats, detect_split_signal
 from pumpkins.conventions.scope import RuleScope
+from pumpkins.languages.cpp import vocabulary
 from pumpkins.llm.provider import get_client
 
 log = logging.getLogger(__name__)
@@ -161,11 +162,16 @@ class RuleCheck(BaseModel):
         "query",
         "none",
     ] = "none"
-    # naming
-    category: str = ""   # member | function | class_type | constant
+    # naming. `category` and `casing` are closed vocabularies, so they are
+    # spelled as types — the provider then cannot return a value we do not
+    # recognise. `value` stays free text because a prefix like "m_" genuinely
+    # is. See languages/cpp/vocabulary.py for why this distinction is load-bearing.
+    category: vocabulary.RuleCategory | Literal[""] = ""
     facet: Literal["prefix", "suffix", "casing", ""] = ""
-    # naming: the affix/casing. member_ownership: "smart" | "raw".
-    value: str = ""
+    value: str = ""                      # the literal affix, e.g. "m_", "Impl"
+    casing: vocabulary.RuleCasing | Literal[""] = ""
+    # member_ownership
+    ownership: vocabulary.OwnershipKind | Literal[""] = ""
     # header_directive
     text: str = ""
     # return_type (structural, needs tree-sitter)
@@ -179,6 +185,15 @@ class RuleCheck(BaseModel):
     # a base whose name contains base_contains.
     name_suffix: str = ""
     base_contains: str = ""
+    def casing_target(self) -> str:
+        """The casing this check requires. Prefers the enum field; falls back to
+        the free-text `value` so rules stored before the field existed still run."""
+        return self.casing or self.value
+
+    def ownership_target(self) -> str:
+        """How the member should hold its pointee, with the same fallback."""
+        return (self.ownership or self.value or "smart").strip().lower()
+
     # query (open-ended): a pair of tree-sitter queries, each capturing the node
     # under judgement as @subject. `population` is the denominator — the sites the
     # rule is about — and `conforming` the subset that satisfies it. This is the
